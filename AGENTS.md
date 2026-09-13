@@ -84,7 +84,7 @@ unified-bsc-predict/
 
 ## 4. Key Workflows & CLI Commands
 
-Always run commands from the workspace root (`c:\Users\Santo\unified-bsc-predict`).
+Always run commands from the workspace root.
 
 ### Universal Quality Gate
 
@@ -96,10 +96,11 @@ npm run validate
 
 This runs in sequence: `check:secrets` → `format:check` → `lint` → `typecheck` → `test` → `build`.
 
-### Granular Checks
+### Targeted Development Checks (Token-Efficient)
 
-- **Type Checking**: `npm run typecheck` (checks `packages/core`, `apps/server`, `apps/web`)
-- **Unit & Integration Tests**: `npm test` (or `npm run test:watch`)
+- **Targeted Unit Test**: `npx vitest run <path/to/test.ts>` (avoid running the full test suite during intermediate iterations)
+- **Full Test Suite**: `npm test`
+- **Type Checking**: `npm run typecheck`
 - **Linting**: `npm run lint`
 - **Formatting**: `npm run format` (writes fixes) or `npm run format:check`
 - **Secret Scan**: `npm run check:secrets`
@@ -107,9 +108,9 @@ This runs in sequence: `check:secrets` → `format:check` → `lint` → `typech
 
 ### Local Development
 
-- **Dev Server**: `npm run dev:server` (runs `@bsc/server` with reload)
-- **Dev UI**: `npm run dev:web` (runs Vite dashboard on `:5173`)
-- **Dev Dashboard with Auth Proxy**: `node scripts/dev-dashboard.mjs` (injects admin token for local dev)
+- **Dev Server**: `npm run dev:server`
+- **Dev UI**: `npm run dev:web`
+- **Dev Dashboard with Auth Proxy**: `node scripts/dev-dashboard.mjs`
 
 ### Application CLI
 
@@ -123,8 +124,6 @@ npm run app -- strategy list|enable <slug>   # Manage strategies
 npm run app -- health                        # Verify RPC, contracts, and wallet connectivity
 npm run app -- verify-chain                  # Dry-run read-only contract verification
 ```
-
-_(For rapid development without rebuild: `npm run app:dev -- <command>`)_
 
 ---
 
@@ -149,10 +148,20 @@ _(For rapid development without rebuild: `npm run app:dev -- <command>`)_
 
 ---
 
-## 6. Agent Instructions for Modifications
+## 6. Agent Instructions & Context Guardrails
 
-When working in this repository:
+When working in this repository, follow these constraints:
 
-1. **Preserve Documentation & Comments**: Keep architectural docstrings, safety notices, and formula explanations intact.
-2. **Never Weaken Risk Limits**: Do not bypass risk gates, circuit breakers, or confirmation mechanisms in tests or application code.
-3. **Verify Before Declaring Done**: Every code change must pass `npm run validate` cleanly (exit code 0, 0 lint errors, 0 type errors, all tests green).
+### 6.1 Token & Context Preservation (STRICT)
+
+- **Targeted Reading**: Never read entire files exceeding 120 lines if only a specific function, type, or state transition is relevant. Use line-range reads or grep/search first.
+- **Selective Test Execution**: During iterations, run ONLY the test file related to the code being changed (`npx vitest run <path-to-test>`). Do NOT run the full test suite until final validation.
+- **Fail-Fast Circuit Breaker**: If a compilation, typecheck, or test error persists identically after 2 attempts, HALT immediately. Present the error and ask for clarification rather than trying random edits in a loop.
+- **No Speculative Exploration**: Limit searches strictly to the packages or apps impacted by the user prompt. Do not read historical archives, docs, or scripts unless specifically instructed.
+- **Concise Execution**: Avoid chatty preambles or repeating instructions. Provide diffs and direct technical summaries.
+
+### 6.2 Operational Integrity
+
+- **Preserve Documentation & Comments**: Keep architectural docstrings, safety notices, and formula explanations intact.
+- **Never Weaken Risk Limits**: Do not bypass risk gates, circuit breakers, or confirmation mechanisms in tests or application code.
+- **Final Validation**: Before marking a task complete, ensure `npm run validate` passes (exit code 0, 0 lint errors, 0 type errors, all tests green).
