@@ -1,0 +1,18 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATABASE_URL: file:/app/data/bsc-predict.db
+      LOG_DIR: /app/logs
+    # Published on localhost only. Put a TLS reverse proxy in front before exposing it further.
+    ports:
+      - '127.0.0.1:8080:8080'
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    stop_grace_period: 30s

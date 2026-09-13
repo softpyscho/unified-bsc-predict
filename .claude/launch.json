@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--disable-warning=ExperimentalWarning", "apps/server/dist/main.js"],
+      "port": 8080
+    },
+    {
+      "name": "dashboard-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/dev-dashboard.mjs"],
+      "port": 5173
+    }
+  ]
+}

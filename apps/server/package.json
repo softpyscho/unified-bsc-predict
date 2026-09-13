@@ -1,0 +1,25 @@
+{
+  "name": "@bsc/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API, worker services (ingestion, round monitor, strategy engine, execution, settlement) and CLI.",
+  "bin": {
+    "bsc-predict": "dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/main.ts",
+    "build": "node build.mjs",
+    "start": "node --disable-warning=ExperimentalWarning dist/main.js"
+  },
+  "dependencies": {
+    "@bsc/core": "*",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/static": "^10.1.3",
+    "commander": "^15.0.0",
+    "fastify": "^5.12.4",
+    "pino": "^10.3.1",
+    "viem": "^2.56.5",
+    "zod": "^4.6.4"
+  }
+}

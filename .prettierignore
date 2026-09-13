@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+data
+logs
+package-lock.json
+apps/server/src/chain/abis.ts

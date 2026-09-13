@@ -1,0 +1,59 @@
+# =========================
+# Secrets & Environment Variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# Private keys & certificates
+*.pem
+*.key
+keystore/
+
+# =========================
+# Dependencies
+# =========================
+node_modules/
+vendor/
+.venv/
+jspm_packages/
+
+# =========================
+# Build Outputs & Compilers
+# =========================
+dist/
+build/
+out/
+.next/
+.turbo/
+.nuxt/
+coverage/
+*.tsbuildinfo
+
+# Source maps & minified bundles (if generated locally)
+*.map
+*.min.js
+*.min.css
+
+# =========================
+# Database & Local Runtime State
+# =========================
+data/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# =========================
+# System & Editor Overrides
+# =========================
+# Kept as fallback in case a contributor lacks a global gitignore
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/

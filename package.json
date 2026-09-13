@@ -1,0 +1,45 @@
+{
+  "name": "unified-bsc-predict",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Unified PancakeSwap Prediction platform: round ingestion, strategies, risk, paper/live execution, settlement, portfolio analytics and backtesting.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev:server": "npm run dev -w @bsc/server",
+    "dev:web": "npm run dev -w @bsc/web",
+    "build": "npm run build -w @bsc/server && npm run build -w @bsc/web",
+    "start": "node --disable-warning=ExperimentalWarning apps/server/dist/main.js",
+    "app": "node --disable-warning=ExperimentalWarning apps/server/dist/cli.js",
+    "app:dev": "tsx apps/server/src/cli.ts",
+    "migrate": "npm run app -- migrate",
+    "migrate:history": "npm run app -- import-history",
+    "typecheck": "tsc -p packages/core && tsc -p apps/server && tsc -p apps/web",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "validate": "npm run check:secrets && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.5.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.10.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
+  }
+}

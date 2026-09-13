@@ -1,0 +1,12 @@
+{
+  "name": "@bsc/core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure domain logic shared by server and web: round math, payouts, strategies, risk rules, portfolio metrics, backtest replay.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts"
+}
