@@ -13,9 +13,10 @@ import type { RiskLimits } from './risk.js';
 import { mergeLimits } from './risk.js';
 import type { FinalRound } from './round.js';
 import { simulatedPayout } from './round.js';
+import { weiToBnb } from './units.js';
 import type { StrategyConfig } from './strategy/config.js';
 import { strategyLimitOverrides } from './strategy/config.js';
-import { buildContext } from './strategy/context.js';
+import { OWN_TRADES_LOOKBACK, buildContext } from './strategy/context.js';
 import { decide, lookbackFor } from './strategy/pipeline.js';
 import type { StrategyPlugin } from './strategy/types.js';
 import { resultFor, tradeNetPnl } from './trade.js';
@@ -212,6 +213,16 @@ export class BacktestRunner {
       history: opts.rounds,
       historyEnd: index,
       lookback: state.lookback,
+      // `state.entries` is appended in ascending epoch order and only ever grows, so take just the tail
+      // (buildContext re-sorts/caps it anyway) — mapping the whole array every round would be O(n²) over a
+      // long backtest.
+      ownTrades: state.entries.slice(-OWN_TRADES_LOOKBACK).map((e) => ({
+        epoch: e.epoch,
+        direction: e.direction,
+        amountBnb: weiToBnb(e.amount),
+        status: e.status,
+        result: e.result,
+      })),
       price: null,
       bankrollWei: bankroll,
       treasuryFeeBps: opts.treasuryFeeBps,

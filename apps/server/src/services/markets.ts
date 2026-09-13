@@ -1,5 +1,5 @@
 /** Market registry: seeds markets/strategies/wallet and keeps contract parameters in sync with the chain. */
-import { BUILTIN_STRATEGIES, defaultStrategyConfig, manualOrder } from '@bsc/core';
+import { BUILTIN_STRATEGIES, defaultStrategyConfig, manualOrder, sequenceRecovery } from '@bsc/core';
 import type { StrategyPlugin } from '@bsc/core';
 import { getAddress } from 'viem';
 import type { ContractParams } from '../chain/types.js';
@@ -92,6 +92,12 @@ export class MarketService {
     const plugins: StrategyPlugin[] = [...BUILTIN_STRATEGIES, manualOrder as StrategyPlugin];
     for (const plugin of plugins) {
       const isManual = plugin.id === manualOrder.id;
+      const seedConfig = defaultStrategyConfig(plugin, Number(config.defaultBetWei) / 1e18);
+      if (plugin.id === sequenceRecovery.id) {
+        // The recovery ladder sizes its own stake per step (see sequenceRecovery's `stakeFor`), so it must
+        // be seeded with sizing.mode SIGNAL — a fixed per-trade stake would defeat the ladder entirely.
+        seedConfig.sizing.mode = 'SIGNAL';
+      }
       repos.strategies.insertIfMissing({
         slug: plugin.id,
         plugin: plugin.id,
@@ -99,7 +105,7 @@ export class MarketService {
         version: plugin.version,
         description: plugin.description,
         marketId: tradable.id,
-        config: defaultStrategyConfig(plugin, Number(config.defaultBetWei) / 1e18),
+        config: seedConfig,
         enabled: isManual,
         paperTradingEnabled: true,
         liveTradingEnabled: false,

@@ -13,7 +13,12 @@ import {
 import type { RoundOutcome } from '../src/index.js';
 import { BUFFER, LOOSE_LIMITS, series } from './fixtures.js';
 
-function ctxAt(outcomes: RoundOutcome[], bettingIndex: number, secondsBeforeLock = 30) {
+function ctxAt(
+  outcomes: RoundOutcome[],
+  bettingIndex: number,
+  secondsBeforeLock = 30,
+  ownTrades: Parameters<typeof buildContext>[0]['ownTrades'] = [],
+) {
   const rounds = series(outcomes);
   const betting = rounds[bettingIndex]!;
   const now = betting.lockTime! - secondsBeforeLock;
@@ -31,6 +36,7 @@ function ctxAt(outcomes: RoundOutcome[], bettingIndex: number, secondsBeforeLock
       live: rounds[bettingIndex - 1] ?? null,
       history: rounds,
       lookback: 50,
+      ownTrades,
       price: null,
       bankrollWei: bnbToWei(1),
       treasuryFeeBps: 300,
@@ -75,6 +81,7 @@ describe('buildContext (look-ahead protection)', () => {
       live: rounds[0]!,
       history: rounds,
       lookback: 10,
+      ownTrades: [],
       price: { value: 60_100_000_000, updatedAt: rounds[0]!.lockTime! + 100 },
       bankrollWei: 0n,
       treasuryFeeBps: 300,
@@ -83,6 +90,24 @@ describe('buildContext (look-ahead protection)', () => {
     expect(ctx.live?.lockPrice).toBeNull();
     expect(ctx.price).toBeNull(); // observed after `now`
     expect(ctx.history).toHaveLength(0);
+  });
+
+  it('exposes own trades most-recent-first, dropping any on or after the betting round', () => {
+    // series() starts epochs at 100 by default, so bettingIndex 4 is epoch 104.
+    const { ctx } = ctxAt(['BULL', 'BULL', 'BULL', 'BULL', 'BULL'], 4, 30, [
+      { epoch: 101, direction: 'BULL', amountBnb: 0.01, status: 'SETTLED', result: 'LOST' },
+      { epoch: 103, direction: 'BEAR', amountBnb: 0.03, status: 'SETTLED', result: 'WON' },
+      { epoch: 104, direction: 'BULL', amountBnb: 0.06, status: 'CONFIRMED', result: null }, // being decided now
+      { epoch: 105, direction: 'BULL', amountBnb: 0.06, status: 'CONFIRMED', result: null }, // future: must not leak
+    ]);
+    expect(ctx.ownTrades.map((t) => t.epoch)).toEqual([103, 101]);
+    expect(ctx.ownTrades[0]).toEqual({
+      epoch: 103,
+      direction: 'BEAR',
+      amountBnb: 0.03,
+      status: 'SETTLED',
+      result: 'WON',
+    });
   });
 });
 

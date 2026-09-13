@@ -1,9 +1,13 @@
 import type { Direction, RoundView } from '../round.js';
-import type { RunMode } from '../trade.js';
+import type { RunMode, TradeResult, TradeStatus } from '../trade.js';
 import type { ParamSpec, ParamValues } from './params.js';
 
 export type SignalAction = 'BUY_UP' | 'BUY_DOWN' | 'WAIT' | 'SKIP';
 export const SIGNAL_ACTIONS: readonly SignalAction[] = ['BUY_UP', 'BUY_DOWN', 'WAIT', 'SKIP'];
+
+/** Any JSON-serializable value — indicators are stored and displayed as JSON, so nesting is fine. */
+export type IndicatorValue =
+  string | number | boolean | null | readonly IndicatorValue[] | { readonly [key: string]: IndicatorValue };
 
 export interface Signal {
   action: SignalAction;
@@ -13,7 +17,8 @@ export interface Signal {
   stakeBnb?: number;
   rationale: string;
   riskScore?: number;
-  indicators?: Record<string, number | string | boolean | null>;
+  /** Explainability payload (e.g. the transition matrix, the recovery ladder state). Any JSON value. */
+  indicators?: Record<string, IndicatorValue>;
 }
 
 /** The round currently accepting bets. `pool` is null when it cannot be observed (backtests). */
@@ -40,6 +45,20 @@ export interface LiveRoundView {
 }
 
 /**
+ * One of THIS strategy's own past trades (same strategy, same mode), most recent first. This is how a
+ * sequence-recovery strategy recovers its exact state after a restart: the state is never stored separately —
+ * it is re-derived, deterministically, from the persisted trade ledger every time `evaluate` runs. `status`
+ * lets a strategy tell "settled and lost" apart from "still open" (e.g. a live bet awaiting confirmation).
+ */
+export interface OwnTradeView {
+  epoch: number;
+  direction: Direction;
+  amountBnb: number;
+  status: TradeStatus;
+  result: TradeResult | null;
+}
+
+/**
  * Everything a strategy may see. Built by `buildContext`, which guarantees that no information from after
  * `now` is present — the same builder is used for backtest, paper and live evaluation.
  */
@@ -51,6 +70,8 @@ export interface StrategyContext {
   live: LiveRoundView | null;
   /** Final rounds known at `now`, oldest → newest, at most the plugin's lookback. */
   history: readonly RoundView[];
+  /** This strategy's own past trades (same strategy + mode), most recent first, bounded (see context.ts). */
+  ownTrades: readonly OwnTradeView[];
   /** Latest oracle price in USD. Not available in backtests (null). */
   price: { value: number; updatedAt: number } | null;
   bankrollBnb: number;

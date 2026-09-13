@@ -7,12 +7,19 @@
  *  - the live round's lock price is known once `lockTime <= now`; its close is never known;
  *  - the betting round's pool is only passed when it was actually observed (live/paper), never in backtests.
  */
-import type { FinalRound, RoundRecord } from '../round.js';
+import type { Direction, FinalRound, RoundRecord } from '../round.js';
 import { payoutMultiplier, toRoundView } from '../round.js';
 import type { RoundView } from '../round.js';
-import type { RunMode } from '../trade.js';
+import type { RunMode, TradeResult, TradeStatus } from '../trade.js';
 import { priceToUsd, weiToBnb } from '../units.js';
-import type { StrategyContext } from './types.js';
+import type { OwnTradeView, StrategyContext } from './types.js';
+
+/**
+ * How many of the strategy's own past trades to expose. Trades are far sparser than rounds (a strategy may
+ * skip many rounds between bets), so this is a small fixed cap rather than tied to the plugin's round lookback
+ * — generous enough for a 4-step recovery ladder plus surrounding context.
+ */
+export const OWN_TRADES_LOOKBACK = 20;
 
 export interface ContextInput {
   mode: RunMode;
@@ -29,6 +36,14 @@ export interface ContextInput {
   /** Only history[0 .. historyEnd) is considered (lets backtests avoid copying). Defaults to history.length. */
   historyEnd?: number;
   lookback: number;
+  /** This strategy's own past trades, any order; filtered to epoch < betting.epoch and capped, most-recent-first. */
+  ownTrades: readonly {
+    epoch: number;
+    direction: Direction;
+    amountBnb: number;
+    status: TradeStatus;
+    result: TradeResult | null;
+  }[];
   price: { value: number; updatedAt: number } | null;
   bankrollWei: bigint;
   treasuryFeeBps: number;
@@ -66,6 +81,22 @@ export function buildContext(input: ContextInput): StrategyContext {
         }
       : null;
 
+  // Defence in depth: the caller already only supplies trades that exist as of `now` (a persisted ledger
+  // query, or a backtest state settled up to `now`), but a trade on the round being decided right now — or
+  // any later round — can never legitimately be "own history" for this decision.
+  const ownTrades: OwnTradeView[] = input.ownTrades
+    .filter((t) => t.epoch < betting.epoch)
+    .slice()
+    .sort((a, b) => b.epoch - a.epoch)
+    .slice(0, OWN_TRADES_LOOKBACK)
+    .map((t) => ({
+      epoch: t.epoch,
+      direction: t.direction,
+      amountBnb: t.amountBnb,
+      status: t.status,
+      result: t.result,
+    }));
+
   const pool = betting.pool
     ? {
         bullAmount: weiToBnb(betting.pool.bullAmount),
@@ -88,6 +119,7 @@ export function buildContext(input: ContextInput): StrategyContext {
     },
     live,
     history,
+    ownTrades,
     price:
       input.price && input.price.updatedAt <= now
         ? { value: input.price.value / 1e8, updatedAt: input.price.updatedAt }

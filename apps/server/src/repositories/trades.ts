@@ -414,6 +414,21 @@ export class TradesRepo {
       )
       .map(map);
   }
+
+  /**
+   * This strategy's own most recent trades in this mode, most-recent-first — the persisted state a
+   * sequence-recovery strategy re-derives its ladder position from after a restart (see core `ownTrades`).
+   * FAILED trades are excluded: the contract never recorded them, so they carry no directional history.
+   */
+  recentForStrategy(strategyId: number, mode: TradeMode, beforeEpoch: number, limit: number): Trade[] {
+    return this.db
+      .all<Row>(
+        `SELECT * FROM trades WHERE strategy_id = ? AND mode = ? AND epoch < ? AND status <> 'FAILED'
+           ORDER BY epoch DESC LIMIT ?`,
+        [strategyId, mode, beforeEpoch, limit],
+      )
+      .map(map);
+  }
 }
 
 export interface Claim {

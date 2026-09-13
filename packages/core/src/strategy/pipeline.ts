@@ -6,7 +6,7 @@ import type { Direction } from '../round.js';
 import type { GateCheck, RiskCheck, RiskLimits, RiskState } from '../risk.js';
 import { evaluateRisk } from '../risk.js';
 import type { RunMode } from '../trade.js';
-import { bnbToWei, mulWeiByFraction } from '../units.js';
+import { bnbToWei, mulWeiByFraction, stakeBnbToWei } from '../units.js';
 import type { StrategyConfig } from './config.js';
 import type { Signal, StrategyContext, StrategyPlugin } from './types.js';
 import { SIGNAL_ACTIONS, signalDirection } from './types.js';
@@ -45,7 +45,7 @@ export function computeStake(sizing: StrategyConfig['sizing'], bankrollWei: bigi
       return mulWeiByFraction(bankrollWei > 0n ? bankrollWei : 0n, sizing.fraction);
     case 'SIGNAL':
       return signal.stakeBnb !== undefined && Number.isFinite(signal.stakeBnb) && signal.stakeBnb > 0
-        ? bnbToWei(signal.stakeBnb)
+        ? stakeBnbToWei(signal.stakeBnb)
         : bnbToWei(sizing.fixedBnb);
   }
 }

@@ -1,5 +1,6 @@
 export * from './units.js';
 export * from './round.js';
+export * from './sequence.js';
 export * from './trade.js';
 export * from './risk.js';
 export * from './portfolio.js';
@@ -10,3 +11,4 @@ export * from './strategy/config.js';
 export * from './strategy/context.js';
 export * from './strategy/pipeline.js';
 export * from './strategy/builtins.js';
+export * from './strategy/sequenceStrategies.js';

@@ -5,6 +5,7 @@
  */
 import type { Decision, Direction, GateCheck, RiskState, StrategyConfig, TradeMode } from '@bsc/core';
 import {
+  OWN_TRADES_LOOKBACK,
   buildContext,
   decide,
   getPlugin,
@@ -13,6 +14,7 @@ import {
   mergeLimits,
   parseStrategyConfig,
   strategyLimitOverrides,
+  weiToBnb,
   weiToBnbString,
 } from '@bsc/core';
 import type { NewDecision } from '../repositories/decisions.js';
@@ -249,6 +251,15 @@ export class StrategyEngine {
 
     const lookback = lookbackFor(plugin, config);
     const history = this.ctx.repos.rounds.recentFinal(state.marketId, round.epoch, lookback);
+    const ownTrades = this.ctx.repos.trades
+      .recentForStrategy(strategy.id, mode, round.epoch, OWN_TRADES_LOOKBACK)
+      .map((t) => ({
+        epoch: t.epoch,
+        direction: t.direction,
+        amountBnb: weiToBnb(t.amount),
+        status: t.status,
+        result: t.result,
+      }));
     const sctx = buildContext({
       mode,
       now,
@@ -261,6 +272,7 @@ export class StrategyEngine {
       live: state.live,
       history,
       lookback,
+      ownTrades,
       price: state.oracle ? { value: state.oracle.price, updatedAt: state.oracle.updatedAt } : null,
       bankrollWei: riskState.bankrollWei,
       treasuryFeeBps: state.params.treasuryFeeBps,

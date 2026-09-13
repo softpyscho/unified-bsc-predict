@@ -78,6 +78,21 @@ export function ratio(numerator: bigint, denominator: bigint): number | null {
   return Number((numerator * SCALE) / denominator) / Number(SCALE);
 }
 
+/**
+ * Converts a strategy-computed BNB stake (an arbitrary float, e.g. from a division) to wei, rounded to the
+ * nearest 1e-9 BNB. `bnbToWei` parses the number's shortest round-trip decimal string and rejects anything
+ * needing more than 18 fractional digits — safe for operator-entered amounts, but a computed value like
+ * `(priorLosses + targetProfit) / (payout - 1)` can legitimately need 19+ digits to round-trip exactly even
+ * though it's a perfectly ordinary stake. Rounding first (1e-9 BNB is far finer than any real stake needs)
+ * sidesteps that entirely instead of asking every stake-computing strategy to pre-round itself.
+ */
+export function stakeBnbToWei(value: number): bigint {
+  if (!Number.isFinite(value) || value < 0) throw new RangeError(`Invalid BNB amount: ${value}`);
+  const ROUND_SCALE = 1_000_000_000n; // 1e9: round to the nearest 1e-9 BNB
+  const rounded = BigInt(Math.round(value * Number(ROUND_SCALE)));
+  return rounded * (WEI_PER_BNB / ROUND_SCALE);
+}
+
 /** Multiplies wei by a float fraction (e.g. bankroll * 0.05), rounding down to the wei. */
 export function mulWeiByFraction(wei: bigint, fraction: number): bigint {
   if (!Number.isFinite(fraction) || fraction < 0) throw new RangeError(`Invalid fraction ${fraction}`);

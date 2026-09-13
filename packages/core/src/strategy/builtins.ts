@@ -3,6 +3,7 @@
  * (whose README warns they are demonstrations that lose money); they remain demonstrations here.
  */
 import type { RoundView } from '../round.js';
+import { SEQUENCE_STRATEGIES } from './sequenceStrategies.js';
 import type { Signal, StrategyPlugin } from './types.js';
 
 const skip = (rationale: string, indicators?: Signal['indicators']): Signal => ({
@@ -207,6 +208,7 @@ export const BUILTIN_STRATEGIES: readonly StrategyPlugin[] = [
   followLastWinner as StrategyPlugin,
   momentum as StrategyPlugin,
   streakReversal as StrategyPlugin,
+  ...SEQUENCE_STRATEGIES,
 ];
 
 export function getPlugin(id: string): StrategyPlugin | undefined {
