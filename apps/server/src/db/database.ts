@@ -96,6 +96,39 @@ function toValue(v: SqlValue): unknown {
   return v;
 }
 
+/**
+ * Embedded PGlite is single-process: a second process opening the same directory would corrupt it. A lock file
+ * next to the directory holds the owner's pid; a lock left by a process that has exited is taken over.
+ */
+function acquireDirLock(dir: string): () => void {
+  const file = `${dir}.lock`;
+  for (;;) {
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
+      return () => fs.rmSync(file, { force: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const pid = Number(fs.readFileSync(file, 'utf8'));
+      if (pid > 0 && processAlive(pid))
+        throw new Error(
+          `database directory ${dir} is in use by process ${pid}. Embedded PGlite allows one process at a time: ` +
+            'stop that process first, or use a postgres:// DATABASE_URL for concurrent access',
+          { cause: err },
+        );
+      fs.rmSync(file, { force: true });
+    }
+  }
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 export class Db {
   private readonly current = new AsyncLocalStorage<Executor>();
   private readonly compiled = new Map<string, Compiled>();
@@ -155,9 +188,16 @@ export class Db {
     const dir = url.replace(/^pglite:/, '');
     const memory = dir === 'memory:' || dir === ':memory:';
     if (!memory) fs.mkdirSync(path.resolve(dir), { recursive: true });
-    const lite = await PGlite.create(memory ? undefined : path.resolve(dir), {
-      parsers: { [INT8]: asNumber, [NUMERIC]: asString },
-    });
+    const release = memory ? () => undefined : acquireDirLock(path.resolve(dir));
+    let lite: PGlite;
+    try {
+      lite = await PGlite.create(memory ? undefined : path.resolve(dir), {
+        parsers: { [INT8]: asNumber, [NUMERIC]: asString },
+      });
+    } catch (err) {
+      release();
+      throw err;
+    }
     const lock = new Mutex();
     const wrap = (q: Pick<PGlite, 'query' | 'exec'>): Executor => ({
       async query(sql, values) {
@@ -178,7 +218,10 @@ export class Db {
       'pglite',
       base,
       (fn) => lock.run(() => lite.transaction((tx) => fn(wrap(tx)))),
-      () => lite.close(),
+      async () => {
+        await lite.close();
+        release();
+      },
     );
   }
 

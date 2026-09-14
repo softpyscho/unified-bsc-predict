@@ -50,8 +50,23 @@ export interface UserRound extends LedgerEntry {
   epoch: number;
 }
 
+/** One BetBull/BetBear log. */
+export interface BetEvent {
+  epoch: number;
+  direction: Direction;
+  sender: Address;
+  amount: bigint;
+  blockNumber: bigint;
+  /** Block timestamp, unix seconds. */
+  blockTime: number;
+  txHash: Hex;
+  logIndex: number;
+}
+
 export interface PredictionReader {
   getParams(): Promise<ContractParams>;
+  /** BetBull/BetBear logs in [fromBlock, toBlock] (inclusive), ordered by block and log index. */
+  getBetEvents(fromBlock: bigint, toBlock: bigint): Promise<BetEvent[]>;
   getSnapshot(): Promise<ChainSnapshot>;
   /** Head (or the given historical block) with its timestamp and the contract's currentEpoch at that block. */
   getHead(blockNumber?: bigint): Promise<ChainHead>;

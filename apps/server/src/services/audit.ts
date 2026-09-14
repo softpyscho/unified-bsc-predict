@@ -44,6 +44,8 @@ export const AuditType = {
   RPC_RECOVERED: 'RPC_RECOVERED',
   WALLET_ADDED: 'WALLET_ADDED',
   AUTH_FAILED: 'AUTH_FAILED',
+  POOL_EVENTS_GAP: 'POOL_EVENTS_GAP',
+  POOL_EVENTS_BACKFILL_STOPPED: 'POOL_EVENTS_BACKFILL_STOPPED',
 } as const;
 
 const LEVEL = { DEBUG: 'debug', INFO: 'info', WARN: 'warn', ERROR: 'error', CRITICAL: 'fatal' } as const;

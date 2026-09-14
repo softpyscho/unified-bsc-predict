@@ -5,6 +5,7 @@ import type { ClaimService } from './claims.js';
 import type { Ctx } from './context.js';
 import type { StrategyEngine } from './engine.js';
 import type { HistorySync } from './historySync.js';
+import type { PoolEventCollector } from './poolEvents.js';
 import type { PortfolioService } from './portfolio.js';
 import type { RecoveryService } from './recovery.js';
 import type { RoundMonitor } from './roundMonitor.js';
@@ -13,6 +14,8 @@ import type { TxReconciler } from './txReconciler.js';
 import type { WalletSyncService } from './walletSync.js';
 
 const RECOVERY_RETRY_MS = 15_000;
+const POOL_EVENTS_INTERVAL_MS = 15_000;
+const POOL_EVENTS_BACKFILL_CHUNKS_PER_RUN = 4;
 
 export class Worker {
   private readonly timers = new Map<string, NodeJS.Timeout>();
@@ -33,6 +36,7 @@ export class Worker {
       walletSync: WalletSyncService;
       history: HistorySync;
       portfolio: PortfolioService;
+      poolEvents: PoolEventCollector;
     },
   ) {}
 
@@ -49,6 +53,14 @@ export class Worker {
       },
       0,
     );
+    // Research data collection is independent of trading recovery.
+    if (config.poolEvents.enabled)
+      this.every(
+        'pool-events',
+        POOL_EVENTS_INTERVAL_MS,
+        () => this.deps.poolEvents.run({ backfillChunks: POOL_EVENTS_BACKFILL_CHUNKS_PER_RUN }),
+        5_000,
+      );
     void this.recover();
   }
 

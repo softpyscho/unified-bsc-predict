@@ -1,4 +1,8 @@
-/** Operator CLI. Uses the same services and database as the server; bot commands take effect on a running server. */
+/**
+ * Operator CLI. Uses the same services and database as the server. With a postgres:// DATABASE_URL, bot commands
+ * take effect on a running server; embedded PGlite allows one process at a time, so stop the server first (or use
+ * the dashboard).
+ */
 import { weiToBnbString } from '@bsc/core';
 import { Command } from 'commander';
 import fs from 'node:fs';
@@ -171,7 +175,9 @@ program
     }),
   );
 
-const bot = program.command('bot').description('control the bot (takes effect on a running server)');
+const bot = program
+  .command('bot')
+  .description('control the bot (reaches a running server only with a postgres:// DATABASE_URL)');
 bot.command('status').action(() => withApp(async (app) => print(await app.bot.view())));
 bot
   .command('start')
@@ -307,6 +313,36 @@ program
       } else if (action === 'sync') {
         print(await app.walletSync.syncAll());
       } else throw new Error(`unknown wallet action ${action}`);
+    }),
+  );
+
+const pool = program
+  .command('pool-events')
+  .description('collect and verify per-bet pool events (BetBull/BetBear logs)');
+pool
+  .command('sync')
+  .description(
+    'collect new events and backfill older ones until caught up or the log node stops serving history',
+  )
+  .option('--backfill-chunks <n>', 'backfill chunks per pass', '20')
+  .action((o: { backfillChunks: string }) =>
+    withApp(async (app) => {
+      for (let pass = 1; ; pass++) {
+        const r = await app.poolEvents.run({ backfillChunks: Number(o.backfillChunks) });
+        console.log(`pass ${pass}: ${stringify(r)}`);
+        if (!r || r.caughtUp) break;
+      }
+      print(await app.poolEvents.status());
+    }),
+  );
+pool.command('status').action(() => withApp(async (app) => print(await app.poolEvents.status())));
+pool
+  .command('reset-backfill')
+  .description('retry backfill after it stopped (e.g. a different LOG_RPC_URLS with longer retention)')
+  .action(() =>
+    withApp(async (app) => {
+      await app.poolEvents.resetBackfill();
+      print(await app.poolEvents.status());
     }),
   );
 

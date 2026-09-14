@@ -5,37 +5,40 @@
 All settings come from the environment (`.env` is loaded automatically). The process validates everything at
 startup and exits with a list of every problem. See `.env.example` for defaults.
 
-| Variable                                           | Default              | Notes                                                     |
-| -------------------------------------------------- | -------------------- | --------------------------------------------------------- |
-| `ADMIN_API_TOKEN`                                  | — (required)         | ≥ 24 chars; dashboard login / Bearer token                |
-| `HOST`, `PORT`                                     | `127.0.0.1`, `8080`  | a warning is logged when not bound to loopback            |
-| `DATABASE_URL`                                     | `pglite:./data/pg`   | embedded Postgres dir, or `postgres://…` (see Database)   |
-| `RPC_URL`, `RPC_URLS`                              | public BSC dataseeds | fallback transport across all URLs                        |
-| `CHAIN_ID`                                         | `56`                 | `97` for testnet                                          |
-| `CONTRACT_ADDRESS`                                 | V2 `0x18B2…9cdA`     | the tradable prediction contract                          |
-| `CONFIRMATIONS`                                    | `3`                  | depth used before a round is treated as final             |
-| `PRIVATE_KEY`                                      | empty                | signing key (live only); never stored, logged or returned |
-| `WALLET_ADDRESS`                                   | empty                | watch-only, or a consistency check against the key        |
-| `LIVE_TRADING_ENABLED`                             | `false`              | master switch for any transaction                         |
-| `PAPER_TRADING_ENABLED`                            | `true`               |                                                           |
-| `PAPER_STARTING_BANKROLL`                          | `1`                  | BNB                                                       |
-| `BOT_AUTO_RESUME_LIVE`                             | `false`              | keep live armed across restarts                           |
-| `DEFAULT_BET_SIZE`                                 | `0.001`              | default fixed stake for seeded strategies                 |
-| `MAX_BET_SIZE`                                     | `0.01`               | per-trade cap                                             |
-| `MAX_BANKROLL_FRACTION`                            | `0.05`               | per-trade cap as a fraction of bankroll                   |
-| `MAX_DAILY_LOSS`                                   | `0.05`               | realized net loss per UTC day (per mode)                  |
-| `MAX_CONSECUTIVE_LOSSES`, `COOLDOWN_ROUNDS`        | `5`, `12`            | loss-streak cooldown                                      |
-| `MAX_TOTAL_EXPOSURE`                               | `0.05`               | stake in unsettled trades                                 |
-| `MIN_WALLET_BALANCE`                               | `0.01`               | balance that must remain after stake + gas reserve        |
-| `MAX_GAS_PRICE_GWEI`                               | `5`                  | live only                                                 |
-| `MIN_SECONDS_BEFORE_LOCK`                          | `6`                  | latest submission time                                    |
-| `MAX_EXECUTION_FAILURES`                           | `3`                  | circuit breaker: pause + disarm                           |
-| `CLAIM_BATCH_MIN`, `CLAIM_MAX_DELAY_MINUTES`       | `3`, `60`            | claim batching                                            |
-| `SIMULATED_GAS_PER_BET`, `SIMULATED_GAS_PER_CLAIM` | `0.00001`            | paper & backtest gas assumptions                          |
-| `POLL_INTERVAL_MS`                                 | `3000`               | market snapshot interval                                  |
-| `SYNC_BATCH_SIZE`, `SYNC_CONCURRENCY`              | `200`, `2`           | history sync                                              |
-| `WALLET_SYNC_INTERVAL_MS`, `RECONCILE_INTERVAL_MS` | `60000`, `600000`    |                                                           |
-| `LOG_LEVEL`, `LOG_DIR`                             | `info`, `./logs`     | `LOG_DIR=none` disables files                             |
+| Variable                                           | Default                   | Notes                                                     |
+| -------------------------------------------------- | ------------------------- | --------------------------------------------------------- |
+| `ADMIN_API_TOKEN`                                  | — (required)              | ≥ 24 chars; dashboard login / Bearer token                |
+| `HOST`, `PORT`                                     | `127.0.0.1`, `8080`       | a warning is logged when not bound to loopback            |
+| `DATABASE_URL`                                     | `pglite:./data/pg`        | embedded Postgres dir, or `postgres://…` (see Database)   |
+| `RPC_URL`, `RPC_URLS`                              | public BSC dataseeds      | fallback transport across all URLs                        |
+| `LOG_RPC_URLS`                                     | `https://rpc-bsc.48.club` | eth_getLogs endpoints for pool events                     |
+| `POOL_EVENTS_ENABLED`, `POOL_EVENTS_CHUNK_BLOCKS`  | `true`, `5000`            | per-bet pool event collector                              |
+| `POOL_EVENTS_BACKFILL_BLOCKS`                      | `600000`                  | backfill depth below the first collected block (0 = none) |
+| `CHAIN_ID`                                         | `56`                      | `97` for testnet                                          |
+| `CONTRACT_ADDRESS`                                 | V2 `0x18B2…9cdA`          | the tradable prediction contract                          |
+| `CONFIRMATIONS`                                    | `3`                       | depth used before a round is treated as final             |
+| `PRIVATE_KEY`                                      | empty                     | signing key (live only); never stored, logged or returned |
+| `WALLET_ADDRESS`                                   | empty                     | watch-only, or a consistency check against the key        |
+| `LIVE_TRADING_ENABLED`                             | `false`                   | master switch for any transaction                         |
+| `PAPER_TRADING_ENABLED`                            | `true`                    |                                                           |
+| `PAPER_STARTING_BANKROLL`                          | `1`                       | BNB                                                       |
+| `BOT_AUTO_RESUME_LIVE`                             | `false`                   | keep live armed across restarts                           |
+| `DEFAULT_BET_SIZE`                                 | `0.001`                   | default fixed stake for seeded strategies                 |
+| `MAX_BET_SIZE`                                     | `0.01`                    | per-trade cap                                             |
+| `MAX_BANKROLL_FRACTION`                            | `0.05`                    | per-trade cap as a fraction of bankroll                   |
+| `MAX_DAILY_LOSS`                                   | `0.05`                    | realized net loss per UTC day (per mode)                  |
+| `MAX_CONSECUTIVE_LOSSES`, `COOLDOWN_ROUNDS`        | `5`, `12`                 | loss-streak cooldown                                      |
+| `MAX_TOTAL_EXPOSURE`                               | `0.05`                    | stake in unsettled trades                                 |
+| `MIN_WALLET_BALANCE`                               | `0.01`                    | balance that must remain after stake + gas reserve        |
+| `MAX_GAS_PRICE_GWEI`                               | `5`                       | live only                                                 |
+| `MIN_SECONDS_BEFORE_LOCK`                          | `6`                       | latest submission time                                    |
+| `MAX_EXECUTION_FAILURES`                           | `3`                       | circuit breaker: pause + disarm                           |
+| `CLAIM_BATCH_MIN`, `CLAIM_MAX_DELAY_MINUTES`       | `3`, `60`                 | claim batching                                            |
+| `SIMULATED_GAS_PER_BET`, `SIMULATED_GAS_PER_CLAIM` | `0.00001`                 | paper & backtest gas assumptions                          |
+| `POLL_INTERVAL_MS`                                 | `3000`                    | market snapshot interval                                  |
+| `SYNC_BATCH_SIZE`, `SYNC_CONCURRENCY`              | `200`, `2`                | history sync                                              |
+| `WALLET_SYNC_INTERVAL_MS`, `RECONCILE_INTERVAL_MS` | `60000`, `600000`         |                                                           |
+| `LOG_LEVEL`, `LOG_DIR`                             | `info`, `./logs`          | `LOG_DIR=none` disables files                             |
 
 ## Database
 
@@ -52,6 +55,11 @@ Migrations run at startup inside one transaction under an advisory lock, so two 
 both apply them. Money is `NUMERIC(78,0)` wei, append-only tables and final-round immutability are enforced by
 PL/pgSQL triggers, and at most one non-failed bet per wallet and round is a partial unique index.
 
+Embedded PGlite is single-process: the server holds `data/pg.lock` while it runs, and a second process (such as the
+CLI) refuses to open the same directory instead of corrupting it. Stop the server before CLI commands that touch the
+database, use the dashboard, or switch to a `postgres://` URL, which any number of processes can share. A lock left
+by a crashed process is taken over automatically.
+
 **Moving from the old SQLite file.** Earlier versions stored everything in `data/bsc-predict.db`; the app now refuses
 a `file:` URL at startup. Import it once, then switch the URL:
 
@@ -63,6 +71,31 @@ DATABASE_URL=pglite:./data/pg npm run app -- import-sqlite data/bsc-predict.db  
 
 The import keeps every row id (so references in logs and reports stay valid), restores the bot state, advances the
 identity sequences, and refuses to write into a database that already has data. The SQLite file is left untouched.
+
+## Pool events (research data)
+
+Round totals say how much was bet; they do not say when. The worker's `pool-events` loop (every 15 s) stores every
+`BetBull`/`BetBear` log in `round_pool_events` (sender, side, amount, block, block time, tx, log index), so research
+can reconstruct each round's pool as it stood at any decision time (`poolBefore`: blocks strictly before the decision
+second). A round's events are trusted only when they sum to the round's final bull and bear amounts exactly, in wei.
+
+- Forward collection follows the head minus `CONFIRMATIONS`. Three consecutive failures on the same range record it
+  in `pool_event_gaps` (audit `POOL_EVENTS_GAP`) and move on; rounds inside a gap fail the completeness check.
+- Backfill works down from the first collected block, 4 chunks per run, to `POOL_EVENTS_BACKFILL_BLOCKS` deep. It
+  stops for good after three failures in a row (audit `POOL_EVENTS_BACKFILL_STOPPED`), which is what a pruning node
+  looks like. `pool-events reset-backfill` retries, e.g. after pointing `LOG_RPC_URLS` at a node with more history.
+- Only BNB Chain nodes that serve `eth_getLogs` work: the default dataseeds reject it. 48.club returns block
+  timestamps with each log and keeps a few days; any other node's timestamps are read from block headers.
+- Volume is roughly 100–300 events per round (tens of thousands of rows a day). That is fine for PGlite or a VPS
+  Postgres, but it fills Supabase's free 500 MB tier in about two months.
+
+```bash
+npm run app -- pool-events status          # collected range, gaps, exact-reconstruction check of the last 288 final rounds
+npm run app -- pool-events sync            # collect and backfill until caught up (server stopped, when using PGlite)
+npm run app -- pool-events reset-backfill
+```
+
+`GET /api/pool-events` returns the same status, and `GET /api/rounds/:epoch` includes the round's events.
 
 ## Historical data
 

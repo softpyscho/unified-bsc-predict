@@ -7,6 +7,7 @@ import type { Direction, RoundRecord } from '@bsc/core';
 import { keccak256, stringToHex } from 'viem';
 import type {
   Address,
+  BetEvent,
   ChainHead,
   ChainSnapshot,
   ContractParams,
@@ -58,6 +59,10 @@ export class FakeChain implements PredictionReader {
   readonly minBetWei = 10n ** 15n;
   price = 60_000_000_000;
   snapshotFailures = 0;
+  /** Transient eth_getLogs failures to inject. */
+  logFailures = 0;
+  /** Log requests reaching below this block fail, as on a node that has pruned old history. */
+  prunedBelow = 0n;
   readonly broadcasts: Hex[] = [];
   private oracleRoundId = 1000n;
   private readonly rounds = new Map<number, RoundRecord>();
@@ -67,6 +72,8 @@ export class FakeChain implements PredictionReader {
   private readonly receipts = new Map<string, TxReceipt>();
   private readonly signed = new Map<string, Tx>();
   private nonce = 0;
+  private readonly betLogs: BetEvent[] = [];
+  private externalTxs = 0;
 
   constructor(startTime = 1_750_000_000) {
     this.time = startTime;
@@ -131,7 +138,8 @@ export class FakeChain implements PredictionReader {
   /** A bet from another market participant (pool liquidity). */
   externalBet(from: Address, direction: Direction, value: bigint): void {
     this.requireBettable(this.currentEpoch, from, value);
-    this.applyBet(from, direction, this.currentEpoch, value);
+    const hash = keccak256(stringToHex(`external:${this.externalTxs++}`));
+    this.applyBet(from, direction, this.currentEpoch, value, hash);
   }
 
   fund(address: string, wei: bigint): void {
@@ -181,7 +189,7 @@ export class FakeChain implements PredictionReader {
       throw new Error('execution reverted: Can only bet once per round');
   }
 
-  private applyBet(from: Address, direction: Direction, epoch: number, value: bigint): void {
+  private applyBet(from: Address, direction: Direction, epoch: number, value: bigint, txHash: Hex): void {
     const r = this.rounds.get(epoch)!;
     this.rounds.set(epoch, {
       ...r,
@@ -193,6 +201,16 @@ export class FakeChain implements PredictionReader {
     const list = this.userEpochs.get(from.toLowerCase()) ?? [];
     list.push(epoch);
     this.userEpochs.set(from.toLowerCase(), list);
+    this.betLogs.push({
+      epoch,
+      direction,
+      sender: from,
+      amount: value,
+      blockNumber: this.blockNumber,
+      blockTime: this.time,
+      txHash,
+      logIndex: this.betLogs.filter((l) => l.blockNumber === this.blockNumber).length,
+    });
   }
 
   isClaimable(epoch: number, a: string): boolean {
@@ -256,7 +274,7 @@ export class FakeChain implements PredictionReader {
     if (tx.kind === 'bet') {
       try {
         this.requireBettable(tx.epoch, tx.from, tx.value);
-        this.applyBet(tx.from, tx.direction, tx.epoch, tx.value);
+        this.applyBet(tx.from, tx.direction, tx.epoch, tx.value, hash);
         this.balances.set(from, (this.balances.get(from) ?? 0n) - tx.value - GAS_COST);
       } catch {
         status = 'reverted';
@@ -347,6 +365,17 @@ export class FakeChain implements PredictionReader {
       claimable: this.isClaimable(epoch, address),
       refundable: this.isRefundable(epoch, address),
     }));
+  }
+
+  async getBetEvents(fromBlock: bigint, toBlock: bigint): Promise<BetEvent[]> {
+    if (this.logFailures > 0) {
+      this.logFailures--;
+      throw new Error('fetch failed');
+    }
+    if (fromBlock < this.prunedBelow) throw new Error('history has been pruned for this block range');
+    return this.betLogs
+      .filter((l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock)
+      .map((l) => ({ ...l }));
   }
 
   async getBalance(address: Address): Promise<bigint> {

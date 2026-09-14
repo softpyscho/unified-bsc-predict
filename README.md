@@ -62,7 +62,7 @@ docker compose up --build       # dashboard on http://127.0.0.1:8080 ; Postgres 
 3. Watch **Live Rounds** (signals per round), **Trades** and **Portfolio**. Every round records why each strategy
    did or did not bet (Round detail → “Why did the bot bet or not bet?”).
 
-CLI equivalent: `npm run app -- strategy enable follow-last-winner` then `npm run app -- bot start` (works against a running server).
+CLI equivalent: `npm run app -- strategy enable follow-last-winner` then `npm run app -- bot start` (reaches a running server only with a `postgres://` `DATABASE_URL`; the embedded default allows one process at a time, so use the dashboard while the server runs).
 
 ## Enabling live trading (real funds)
 

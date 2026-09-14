@@ -10,6 +10,7 @@ import {
   SyncRepo,
   WalletsRepo,
 } from './misc.js';
+import { PoolEventsRepo } from './poolEvents.js';
 import { RoundsRepo } from './rounds.js';
 import { ClaimsRepo, TradesRepo } from './trades.js';
 
@@ -28,6 +29,7 @@ export function createRepos(db: Db) {
     snapshots: new SnapshotsRepo(db),
     backtests: new BacktestsRepo(db),
     sync: new SyncRepo(db),
+    poolEvents: new PoolEventsRepo(db),
   };
 }
 
@@ -37,6 +39,7 @@ export type { Market } from './markets.js';
 export type { StoredRound, UpsertResult } from './rounds.js';
 export type { Trade, TradePatch, Claim } from './trades.js';
 export type { DecisionRecord } from './decisions.js';
+export type { PoolEvent, PoolEventSync, RoundPoolCheck } from './poolEvents.js';
 export type {
   StrategyRow,
   WalletRow,

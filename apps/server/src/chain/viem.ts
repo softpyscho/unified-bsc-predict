@@ -17,12 +17,15 @@ import {
   getAddress,
   http,
   keccak256,
+  toEventSelector,
+  toHex,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { bsc, bscTestnet } from 'viem/chains';
 import { chainlinkOracleAbi, predictionV2Abi } from './abis.js';
 import type {
   Address,
+  BetEvent,
   ChainHead,
   ChainSnapshot,
   ContractParams,
@@ -54,6 +57,21 @@ const multicallExtrasAbi = [
     outputs: [{ name: 'timestamp', type: 'uint256' }],
   },
 ] as const;
+
+/** event BetBull(address indexed sender, uint256 indexed epoch, uint256 amount), and BetBear likewise. */
+export const BET_BULL_TOPIC = toEventSelector('BetBull(address,uint256,uint256)');
+export const BET_BEAR_TOPIC = toEventSelector('BetBear(address,uint256,uint256)');
+
+interface RawBetLog {
+  topics: Hex[];
+  data: Hex;
+  blockNumber: Hex;
+  /** Returned by nodes that implement it (48.club does); fetched from the block header otherwise. */
+  blockTimestamp?: Hex;
+  transactionHash: Hex;
+  logIndex: Hex;
+  removed?: boolean;
+}
 
 /** Multicall chunks: large enough to fit a full sync batch in one RPC request. */
 const MULTICALL_BATCH_BYTES = 128_000;
@@ -111,12 +129,51 @@ function toRecord(t: RoundTuple): RoundRecord {
 export class ViemPredictionReader implements PredictionReader {
   private oracleAddress: Address | null = null;
   private readonly prediction;
+  private readonly logClient: PublicClient;
 
   constructor(
     readonly client: PublicClient,
     readonly contract: Address,
+    /** Client for eth_getLogs; defaults to `client`. */
+    logClient?: PublicClient,
   ) {
     this.prediction = { address: contract, abi: predictionV2Abi } as const;
+    this.logClient = logClient ?? client;
+  }
+
+  async getBetEvents(fromBlock: bigint, toBlock: bigint): Promise<BetEvent[]> {
+    const logs = (await this.logClient.request({
+      method: 'eth_getLogs',
+      params: [
+        {
+          address: this.contract,
+          topics: [[BET_BULL_TOPIC, BET_BEAR_TOPIC]],
+          fromBlock: toHex(fromBlock),
+          toBlock: toHex(toBlock),
+        },
+      ],
+    })) as unknown as RawBetLog[];
+    const times = new Map<string, number>();
+    for (const l of logs) {
+      if (l.blockTimestamp || times.has(l.blockNumber)) continue;
+      const block = await this.logClient.getBlock({ blockNumber: BigInt(l.blockNumber) });
+      times.set(l.blockNumber, Number(block.timestamp));
+    }
+    return logs
+      .filter((l) => !l.removed)
+      .map((l) => ({
+        epoch: Number(BigInt(l.topics[2]!)),
+        direction: l.topics[0]!.toLowerCase() === BET_BULL_TOPIC ? ('BULL' as const) : ('BEAR' as const),
+        sender: getAddress(`0x${l.topics[1]!.slice(26)}`),
+        amount: BigInt(l.data),
+        blockNumber: BigInt(l.blockNumber),
+        blockTime: l.blockTimestamp ? Number(BigInt(l.blockTimestamp)) : times.get(l.blockNumber)!,
+        txHash: l.transactionHash,
+        logIndex: Number(BigInt(l.logIndex)),
+      }))
+      .sort((a, b) =>
+        a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1,
+      );
   }
 
   async getParams(): Promise<ContractParams> {

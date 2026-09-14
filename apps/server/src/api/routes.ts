@@ -287,10 +287,13 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
         ...t,
         strategySlug: t.strategyId === null ? null : (slugs.get(t.strategyId) ?? null),
       })),
+      poolEvents: await repos.poolEvents.forRound(market.id, epoch),
       corrections: await repos.rounds.corrections(round.id),
       audit: await repos.audit.list({ epoch }, 100),
     };
   });
+
+  server.get('/api/pool-events', async () => app.poolEvents.status());
 
   // ------------------------------------------------------------------------------------------------ trades & decisions
 

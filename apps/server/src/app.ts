@@ -19,6 +19,7 @@ import { EventBus } from './services/events.js';
 import { ExecutionService } from './services/execution.js';
 import { HistorySync } from './services/historySync.js';
 import { MarketService } from './services/markets.js';
+import { PoolEventCollector } from './services/poolEvents.js';
 import { PortfolioService } from './services/portfolio.js';
 import { RecoveryService } from './services/recovery.js';
 import { RiskStateBuilder } from './services/riskState.js';
@@ -50,6 +51,7 @@ export async function createApp(config: AppConfig, deps: AppDeps = {}) {
     const viemReader = new ViemPredictionReader(
       createChainClient(config.rpcUrls, config.chainId),
       config.contractAddress,
+      createChainClient(config.logRpcUrls, config.chainId),
     );
     reader = viemReader;
     if (writer === undefined && config.secrets.privateKey) {
@@ -82,6 +84,7 @@ export async function createApp(config: AppConfig, deps: AppDeps = {}) {
   const txReconciler = new TxReconciler(ctx, execution, claims);
   const backtests = new BacktestService(ctx, markets);
   const csv = new CsvImporter(ctx);
+  const poolEvents = new PoolEventCollector(ctx, markets);
   const recovery = new RecoveryService(ctx, {
     bot,
     markets,
@@ -102,6 +105,7 @@ export async function createApp(config: AppConfig, deps: AppDeps = {}) {
     walletSync,
     history,
     portfolio,
+    poolEvents,
   });
 
   return {
@@ -126,6 +130,7 @@ export async function createApp(config: AppConfig, deps: AppDeps = {}) {
     txReconciler,
     backtests,
     csv,
+    poolEvents,
     recovery,
     worker,
     async close(): Promise<void> {

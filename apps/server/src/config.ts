@@ -48,6 +48,11 @@ const schema = z.object({
     .default(
       'https://bsc-dataseed.bnbchain.org,https://bsc-dataseed1.defibit.io,https://bsc-dataseed1.ninicoin.io',
     ),
+  /** eth_getLogs endpoints: BNB Chain's dataseeds reject eth_getLogs; 48.club serves logs with block timestamps. */
+  LOG_RPC_URLS: z.string().default('https://rpc-bsc.48.club'),
+  POOL_EVENTS_ENABLED: boolish.default(true),
+  POOL_EVENTS_CHUNK_BLOCKS: int(10, 50_000).default(5000),
+  POOL_EVENTS_BACKFILL_BLOCKS: int(0, 50_000_000).default(600_000),
   CHAIN_ID: z.coerce
     .number()
     .refine((v) => v === 56 || v === 97, 'must be 56 (BSC) or 97 (BSC testnet)')
@@ -107,6 +112,14 @@ export interface AppConfig {
   /** `postgres://…` (Postgres, Supabase), `pglite:<dir>` (embedded) or `memory:` (tests). */
   databaseUrl: string;
   rpcUrls: string[];
+  /** Endpoints used for eth_getLogs (bet events). */
+  logRpcUrls: string[];
+  poolEvents: {
+    enabled: boolean;
+    chunkBlocks: number;
+    /** How far below the first collected block to backfill (0 = never). */
+    backfillBlocks: number;
+  };
   chainId: 56 | 97;
   contractAddress: Address;
   marketSlug: string;
@@ -199,6 +212,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: e.PORT,
     databaseUrl,
     rpcUrls,
+    logRpcUrls: e.LOG_RPC_URLS.split(',')
+      .map((s) => s.trim())
+      .filter((u, i, all) => u.length > 0 && all.indexOf(u) === i),
+    poolEvents: {
+      enabled: e.POOL_EVENTS_ENABLED,
+      chunkBlocks: e.POOL_EVENTS_CHUNK_BLOCKS,
+      backfillBlocks: e.POOL_EVENTS_BACKFILL_BLOCKS,
+    },
     chainId: e.CHAIN_ID as 56 | 97,
     contractAddress: e.CONTRACT_ADDRESS,
     marketSlug: e.MARKET_SLUG,
@@ -259,6 +280,8 @@ export function publicConfig(c: AppConfig) {
     contractAddress: c.contractAddress,
     marketSlug: c.marketSlug,
     rpcUrls: c.rpcUrls.map((u) => u.replace(/\/\/([^@/]+)@/, '//***@')),
+    logRpcUrls: c.logRpcUrls.map((u) => u.replace(/\/\/([^@/]+)@/, '//***@')),
+    poolEvents: c.poolEvents,
     walletAddress: c.walletAddress,
     hasSigner: c.hasSigner,
     liveTradingEnabled: c.liveTradingEnabled,

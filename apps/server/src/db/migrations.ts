@@ -337,6 +337,58 @@ CREATE TABLE backtest_runs (
 );
 `,
   },
+  {
+    id: 2,
+    name: 'round pool events',
+    sql: `
+-- One row per BetBull/BetBear log: the order and timing of money entering each round's pool. Research uses it to
+-- reconstruct what the pool looked like at any decision time; a round's events are trusted only when they sum
+-- exactly (in wei) to the round's final bull/bear amounts.
+CREATE TABLE round_pool_events (
+  id ${ID},
+  market_id BIGINT NOT NULL REFERENCES markets(id),
+  epoch BIGINT NOT NULL,
+  direction TEXT NOT NULL CHECK (direction IN ('BULL','BEAR')),
+  sender TEXT NOT NULL,
+  amount NUMERIC(78,0) NOT NULL CHECK (amount > 0),
+  block_number BIGINT NOT NULL,
+  block_time BIGINT NOT NULL,
+  tx_hash TEXT NOT NULL,
+  log_index INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ${NOW},
+  UNIQUE (market_id, tx_hash, log_index)
+);
+CREATE INDEX idx_pool_events_round ON round_pool_events(market_id, epoch, block_time);
+CREATE INDEX idx_pool_events_block ON round_pool_events(market_id, block_number);
+CREATE TRIGGER round_pool_events_append_only BEFORE UPDATE OR DELETE ON round_pool_events
+  FOR EACH ROW EXECUTE FUNCTION reject_mutation();
+
+-- Collected block range [from_block, to_block] (empty while from_block > to_block). Forward collection extends
+-- to_block towards the head; backfill lowers from_block until anchor_block − the configured depth, or until the
+-- log node stops serving that history.
+CREATE TABLE pool_event_sync (
+  market_id BIGINT PRIMARY KEY REFERENCES markets(id),
+  anchor_block BIGINT NOT NULL,
+  from_block BIGINT NOT NULL,
+  to_block BIGINT NOT NULL,
+  ${FLAG('backfill_done', 0)},
+  backfill_failures INTEGER NOT NULL DEFAULT 0,
+  forward_failures INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at TEXT NOT NULL DEFAULT ${NOW}
+);
+
+-- Block ranges given up on after repeated failures; rounds inside them fail the completeness check.
+CREATE TABLE pool_event_gaps (
+  id ${ID},
+  market_id BIGINT NOT NULL REFERENCES markets(id),
+  from_block BIGINT NOT NULL,
+  to_block BIGINT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ${NOW}
+);
+`,
+  },
 ];
 
 /** Applies pending migrations in one transaction under an advisory lock, so concurrent processes cannot race. */

@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Db, isUniqueViolation } from '../src/db/database.js';
 import { migrate } from '../src/db/migrations.js';
@@ -83,10 +86,23 @@ describe('Db (PGlite)', () => {
   });
 });
 
+describe('embedded PGlite directory lock', () => {
+  it('refuses a second opener while the first is open, releases on close and takes over stale locks', async () => {
+    const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bsp-lock-')), 'pg');
+    const first = await Db.open(`pglite:${dir}`);
+    await expect(Db.open(`pglite:${dir}`)).rejects.toThrow(/in use by process \d+/);
+    await first.close();
+    expect(fs.existsSync(`${dir}.lock`)).toBe(false);
+    fs.writeFileSync(`${dir}.lock`, '999999999'); // left behind by a process that no longer exists
+    const second = await Db.open(`pglite:${dir}`);
+    await second.close();
+  });
+});
+
 describe('migrations (PGlite)', () => {
   it('apply once, are idempotent, and enforce the append-only and immutability triggers', async () => {
     const db = await Db.open('memory:');
-    expect(await migrate(db)).toEqual([1]);
+    expect(await migrate(db)).toEqual([1, 2]);
     expect(await migrate(db)).toEqual([]);
     await db.run(
       "INSERT INTO audit_events (ts, component, severity, type, message) VALUES (1, 'c', 'INFO', 't', 'm')",
