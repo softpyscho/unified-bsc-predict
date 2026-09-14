@@ -41,7 +41,7 @@ const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('127.0.0.1'),
   PORT: int(1, 65535).default(8080),
-  DATABASE_URL: z.string().default('file:./data/bsc-predict.db'),
+  DATABASE_URL: z.string().default('pglite:./data/pg'),
   RPC_URL: z.url().optional(),
   RPC_URLS: z
     .string()
@@ -104,7 +104,8 @@ export interface AppConfig {
   env: 'development' | 'production' | 'test';
   host: string;
   port: number;
-  databasePath: string;
+  /** `postgres://…` (Postgres, Supabase), `pglite:<dir>` (embedded) or `memory:` (tests). */
+  databaseUrl: string;
   rpcUrls: string[];
   chainId: 56 | 97;
   contractAddress: Address;
@@ -166,6 +167,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (e.LIVE_TRADING_ENABLED && !privateKey) issues.push('LIVE_TRADING_ENABLED=true requires PRIVATE_KEY');
   if (e.MAX_BET_SIZE > e.MAX_TOTAL_EXPOSURE) issues.push('MAX_BET_SIZE must not exceed MAX_TOTAL_EXPOSURE');
   if (e.DEFAULT_BET_SIZE > e.MAX_BET_SIZE) issues.push('DEFAULT_BET_SIZE must not exceed MAX_BET_SIZE');
+  if (/^file:|\.db$/i.test(e.DATABASE_URL.trim()))
+    issues.push(
+      'DATABASE_URL points to a SQLite file, but the app now uses PostgreSQL. Import it once with ' +
+        '`npm run app -- import-sqlite <file>` and set DATABASE_URL=pglite:./data/pg (embedded) or a postgres:// URL',
+    );
   if (e.MIN_BET_SIZE > e.MAX_BET_SIZE) issues.push('MIN_BET_SIZE must not exceed MAX_BET_SIZE');
   if (e.ESCALATION_STAKE_THRESHOLD > 0n) {
     if (e.ESCALATION_STAKE_THRESHOLD < e.MIN_BET_SIZE)
@@ -180,14 +186,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const rpcUrls = [...(e.RPC_URL ? [e.RPC_URL] : []), ...e.RPC_URLS.split(',').map((s) => s.trim())].filter(
     (u, i, all) => u.length > 0 && all.indexOf(u) === i,
   );
-  const dbUrl = e.DATABASE_URL;
-  const databasePath = dbUrl === ':memory:' ? ':memory:' : path.resolve(dbUrl.replace(/^file:/, ''));
+  const dbUrl = e.DATABASE_URL.trim();
+  const databaseUrl = /^postgres(ql)?:\/\//.test(dbUrl)
+    ? dbUrl
+    : dbUrl === 'memory:' || dbUrl === ':memory:'
+      ? 'memory:'
+      : `pglite:${path.resolve(dbUrl.replace(/^pglite:/, ''))}`;
 
   const config: Omit<AppConfig, 'secrets'> = {
     env: e.NODE_ENV,
     host: e.HOST,
     port: e.PORT,
-    databasePath,
+    databaseUrl,
     rpcUrls,
     chainId: e.CHAIN_ID as 56 | 97,
     contractAddress: e.CONTRACT_ADDRESS,

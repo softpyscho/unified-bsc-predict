@@ -5,6 +5,10 @@ import fs from 'node:fs';
 import { createApp } from './app.js';
 import type { App } from './app.js';
 import { ConfigError, loadConfig, publicConfig } from './config.js';
+import type { AppConfig } from './config.js';
+import { Db } from './db/database.js';
+import { importSqlite } from './db/importSqlite.js';
+import { migrate } from './db/migrations.js';
 import { silentLoggers } from './logger.js';
 import type { CsvFormat } from './services/csvImport.js';
 import { sleep } from './util/async.js';
@@ -22,11 +26,10 @@ const FORMAT_ALIASES: Record<string, CsvFormat> = {
   prdt: 'PRDT',
 };
 
-function boot(): App {
+function config(): AppConfig {
   if (fs.existsSync('.env')) process.loadEnvFile('.env');
   try {
-    const config = loadConfig();
-    return createApp(config, { loggers: process.env.CLI_VERBOSE ? undefined : silentLoggers() });
+    return loadConfig();
   } catch (err) {
     if (err instanceof ConfigError) {
       console.error(err.message);
@@ -37,7 +40,7 @@ function boot(): App {
 }
 
 async function withApp(fn: (app: App) => Promise<void> | void): Promise<void> {
-  const app = boot();
+  const app = await createApp(config(), { loggers: process.env.CLI_VERBOSE ? undefined : silentLoggers() });
   try {
     await fn(app);
   } catch (err) {
@@ -76,9 +79,34 @@ program
   .description('apply database migrations and seed markets/strategies')
   .action(() =>
     withApp((app) => {
-      console.log(`database ready at ${app.config.databasePath}`);
+      console.log(`database ready at ${app.config.databaseUrl.replace(/\/\/[^@/]+@/, '//***@')}`);
     }),
   );
+
+program
+  .command('import-sqlite <file>')
+  .description(
+    'one-time import of a legacy SQLite database (e.g. data/bsc-predict.db) into the configured, empty PostgreSQL database',
+  )
+  .action(async (file: string) => {
+    const cfg = config();
+    const db = await Db.open(cfg.databaseUrl);
+    try {
+      await migrate(db);
+      const tables = new Map<string, ReturnType<typeof progress>>();
+      const result = await importSqlite(db, file, (table, done, total) => {
+        if (!tables.has(table)) tables.set(table, progress(`  ${table}`));
+        tables.get(table)!(done, total);
+      });
+      print(result);
+      console.log('Import complete. Start the server to seed any new strategies.');
+    } catch (err) {
+      console.error(`error: ${errorMessage(err)}`);
+      process.exitCode = 1;
+    } finally {
+      await db.close();
+    }
+  });
 
 program
   .command('import-history')
@@ -139,42 +167,46 @@ program
     withApp(async (app) => {
       print(await app.history.reconcile());
       await app.txReconciler.run();
-      app.settlement.settleAll();
+      await app.settlement.settleAll();
     }),
   );
 
 const bot = program.command('bot').description('control the bot (takes effect on a running server)');
-bot.command('status').action(() => withApp((app) => print(app.bot.view())));
+bot.command('status').action(() => withApp(async (app) => print(await app.bot.view())));
 bot
   .command('start')
   .option('--reason <text>')
-  .action((o: { reason?: string }) => withApp((app) => print(app.bot.start(o.reason ?? 'cli'))));
+  .action((o: { reason?: string }) => withApp(async (app) => print(await app.bot.start(o.reason ?? 'cli'))));
 bot
   .command('stop')
   .option('--reason <text>')
-  .action((o: { reason?: string }) => withApp((app) => print(app.bot.stop(o.reason ?? 'cli'))));
+  .action((o: { reason?: string }) => withApp(async (app) => print(await app.bot.stop(o.reason ?? 'cli'))));
 bot
   .command('pause')
   .option('--reason <text>')
-  .action((o: { reason?: string }) => withApp((app) => print(app.bot.pause(o.reason ?? 'cli'))));
+  .action((o: { reason?: string }) => withApp(async (app) => print(await app.bot.pause(o.reason ?? 'cli'))));
 bot
   .command('resume')
   .option('--reason <text>')
-  .action((o: { reason?: string }) => withApp((app) => print(app.bot.resume(o.reason ?? 'cli'))));
+  .action((o: { reason?: string }) => withApp(async (app) => print(await app.bot.resume(o.reason ?? 'cli'))));
 bot
   .command('emergency-stop')
   .option('--reason <text>')
-  .action((o: { reason?: string }) => withApp((app) => print(app.bot.emergencyStop(o.reason ?? 'cli'))));
+  .action((o: { reason?: string }) =>
+    withApp(async (app) => print(await app.bot.emergencyStop(o.reason ?? 'cli'))),
+  );
 bot
   .command('reset')
   .description('clear an emergency stop')
   .option('--yes', 'acknowledge')
-  .action((o: { yes?: boolean }) => withApp((app) => print(app.bot.resetEmergency(Boolean(o.yes)))));
+  .action((o: { yes?: boolean }) =>
+    withApp(async (app) => print(await app.bot.resetEmergency(Boolean(o.yes)))),
+  );
 
 const strategy = program.command('strategy').description('manage strategies');
 strategy.command('list').action(() =>
-  withApp((app) => {
-    for (const s of app.repos.strategies.list()) {
+  withApp(async (app) => {
+    for (const s of await app.repos.strategies.list()) {
       console.log(
         `${String(s.id).padStart(3)}  ${s.slug.padEnd(22)} enabled=${s.enabled} paper=${s.paperTradingEnabled} live=${s.liveTradingEnabled}  ${s.name}`,
       );
@@ -185,11 +217,11 @@ strategy
   .command('enable <slug>')
   .option('--live', 'also enable live trading for this strategy (the global live gate still applies)')
   .action((slug: string, o: { live?: boolean }) =>
-    withApp((app) => {
-      const s = app.repos.strategies.bySlug(slug);
+    withApp(async (app) => {
+      const s = await app.repos.strategies.bySlug(slug);
       if (!s) throw new Error(`unknown strategy ${slug}`);
       print(
-        app.repos.strategies.setFlags(s.id, {
+        await app.repos.strategies.setFlags(s.id, {
           enabled: true,
           ...(o.live ? { liveTradingEnabled: true } : {}),
         }),
@@ -197,10 +229,10 @@ strategy
     }),
   );
 strategy.command('disable <slug>').action((slug: string) =>
-  withApp((app) => {
-    const s = app.repos.strategies.bySlug(slug);
+  withApp(async (app) => {
+    const s = await app.repos.strategies.bySlug(slug);
     if (!s) throw new Error(`unknown strategy ${slug}`);
-    print(app.repos.strategies.setFlags(s.id, { enabled: false }));
+    print(await app.repos.strategies.setFlags(s.id, { enabled: false }));
   }),
 );
 
@@ -223,23 +255,24 @@ program
       json?: boolean;
     }) =>
       withApp(async (app) => {
-        const strategies = o.strategy.split(',').map((slug) => {
-          const s = app.repos.strategies.bySlug(slug.trim());
+        const strategies: { strategyId: number }[] = [];
+        for (const slug of o.strategy.split(',')) {
+          const s = await app.repos.strategies.bySlug(slug.trim());
           if (!s) throw new Error(`unknown strategy ${slug}`);
-          return { strategyId: s.id };
-        });
-        const id = app.backtests.start({
+          strategies.push({ strategyId: s.id });
+        }
+        const id = await app.backtests.start({
           from: parseDate(o.from),
           to: parseDate(o.to),
           startingBankrollBnb: Number(o.bankroll),
           applyGlobalLimits: o.globalLimits,
           strategies,
         });
-        let run = app.repos.backtests.get(id)!;
+        let run = (await app.repos.backtests.get(id))!;
         while (run.status === 'RUNNING') {
           process.stdout.write(`\rbacktest #${id}: ${Math.round(run.progress * 100)}%   `);
           await sleep(250);
-          run = app.repos.backtests.get(id)!;
+          run = (await app.repos.backtests.get(id))!;
         }
         process.stdout.write('\n');
         if (run.status === 'FAILED') throw new Error(run.error ?? 'backtest failed');
@@ -270,7 +303,7 @@ program
     withApp(async (app) => {
       if (action === 'add') {
         if (!address) throw new Error('address required');
-        print(app.repos.wallets.upsert(address, 'WATCH', o.label));
+        print(await app.repos.wallets.upsert(address, 'WATCH', o.label));
       } else if (action === 'sync') {
         print(await app.walletSync.syncAll());
       } else throw new Error(`unknown wallet action ${action}`);
@@ -287,7 +320,12 @@ program
         [
           'database',
           async () =>
-            app.repos.markets.list().map((m) => ({ slug: m.slug, ...app.repos.rounds.stats(m.id) })),
+            Promise.all(
+              (await app.repos.markets.list()).map(async (m) => ({
+                slug: m.slug,
+                ...(await app.repos.rounds.stats(m.id)),
+              })),
+            ),
         ],
         ['contract params', async () => app.markets.params(0)],
         ['chain head', async () => app.ctx.reader.getHead()],

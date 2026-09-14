@@ -3,7 +3,7 @@ import { buildServer } from '../src/api/server.js';
 import { TOKEN, bearer, makeHarness, playRound } from './harness.js';
 
 async function setup(live = false) {
-  const h = makeHarness({ live });
+  const h = await makeHarness({ live });
   if (live) h.chain.fund(h.app.config.walletAddress!, 10n ** 18n);
   await h.app.recovery.run();
   const server = await buildServer(h.app);
@@ -13,7 +13,9 @@ async function setup(live = false) {
 describe('API', () => {
   it('requires authentication except for health', async () => {
     const { h, server } = await setup();
-    expect((await server.inject({ method: 'GET', url: '/api/health' })).statusCode).toBe(200);
+    const health = await server.inject({ method: 'GET', url: '/api/health' });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({ database: 'ok', bot: { status: 'STOPPED' } });
     expect((await server.inject({ method: 'GET', url: '/api/overview' })).statusCode).toBe(401);
     expect(
       (
@@ -65,7 +67,7 @@ describe('API', () => {
     expect(
       (await server.inject({ method: 'GET', url: '/api/trades?limit=9999', headers: bearer })).statusCode,
     ).toBe(400);
-    const s = h.app.repos.strategies.bySlug('momentum')!;
+    const s = (await h.app.repos.strategies.bySlug('momentum'))!;
     const bad = await server.inject({
       method: 'PATCH',
       url: `/api/strategies/${s.id}`,
@@ -122,6 +124,20 @@ describe('API', () => {
     await h.app.close();
   });
 
+  it('reports the database engine and size in settings', async () => {
+    const { h, server } = await setup();
+    const settings = (
+      await server.inject({ method: 'GET', url: '/api/settings', headers: bearer })
+    ).json() as {
+      database: { engine: string; sizeBytes: number | null; markets: { slug: string; total: number }[] };
+    };
+    expect(settings.database.engine).toBe('pglite');
+    expect(settings.database.sizeBytes).toBeGreaterThan(0);
+    expect(settings.database.markets.length).toBeGreaterThan(0);
+    await server.close();
+    await h.app.close();
+  });
+
   it('places manual paper orders through the risk pipeline', async () => {
     const { h, server } = await setup();
     await playRound(h, 600e8);
@@ -169,7 +185,7 @@ describe('API', () => {
     const reader = res.body!.getReader();
     const first = new TextDecoder().decode((await reader.read()).value);
     expect(first).toMatch(/^event: hello/);
-    h.app.bot.start('sse-test');
+    await h.app.bot.start('sse-test');
     let seen = '';
     for (let i = 0; i < 5 && !seen.includes('event: bot'); i++)
       seen += new TextDecoder().decode((await reader.read()).value);
@@ -182,7 +198,7 @@ describe('API', () => {
   it('runs a backtest over stored rounds', async () => {
     const { h, server } = await setup();
     for (const p of [600, 601, 602, 601, 600, 601, 603, 602, 604, 603, 605, 606]) await playRound(h, p * 1e8);
-    const s = h.app.repos.strategies.bySlug('follow-last-winner')!;
+    const s = (await h.app.repos.strategies.bySlug('follow-last-winner'))!;
     const start = await server.inject({
       method: 'POST',
       url: '/api/backtest',
@@ -199,7 +215,7 @@ describe('API', () => {
       status: string;
       result: { rounds: number; results: { key: string; summary: { settledTrades: number } }[] };
     };
-    for (let i = 0; i < 100 && run.status === 'RUNNING'; i++) {
+    for (let i = 0; i < 200 && run.status === 'RUNNING'; i++) {
       await new Promise((r) => setTimeout(r, 20));
       run = (await server.inject({ method: 'GET', url: `/api/backtest/${id}`, headers: bearer })).json();
     }

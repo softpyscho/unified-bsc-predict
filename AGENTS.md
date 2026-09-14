@@ -2,7 +2,7 @@
 
 ## 1. Project Overview & Architecture
 
-`unified-bsc-predict` is a production-oriented TypeScript modular monolith for PancakeSwap's BNB/USD Prediction market on BNB Smart Chain (BSC). It unifies prediction tracking, betting automation, historical data archival, risk management, and portfolio analytics into a single process with one canonical SQLite database.
+`unified-bsc-predict` is a production-oriented TypeScript modular monolith for PancakeSwap's BNB/USD Prediction market on BNB Smart Chain (BSC). It unifies prediction tracking, betting automation, historical data archival, risk management, and portfolio analytics into a single process with one canonical PostgreSQL database (embedded PGlite by default, or any `postgres://` server such as Supabase).
 
 ### Monorepo Structure
 
@@ -10,8 +10,8 @@
 unified-bsc-predict/
 ├── packages/core/         # Pure domain logic (ZERO I/O, no DB, no network, shared by server & web)
 │   └── src/               # units, round, trade state machine, risk engine, portfolio, backtest, strategy pipeline
-├── apps/server/           # Node.js service (HTTP API, SSE, worker daemon, CLI, SQLite, viem chain client)
-│   └── src/               # api, chain, db (migrations, SQLite), repositories, services, cli.ts, app.ts
+├── apps/server/           # Node.js service (HTTP API, SSE, worker daemon, CLI, PostgreSQL, viem chain client)
+│   └── src/               # api, chain, db (async Db, migrations, SQLite importer), repositories, services, cli.ts, app.ts
 ├── apps/web/              # Vite + React operator dashboard (built to apps/web/dist, served by apps/server)
 ├── docs/                  # In-depth architectural & operational documentation
 └── scripts/               # Utility scripts (check-secrets.mjs, dev-dashboard.mjs)
@@ -20,7 +20,7 @@ unified-bsc-predict/
 ### Core Architecture Principles
 
 - **Modular Monolith**: Ingestion, strategy evaluation, execution, and settlement run in one Node.js process to share atomic state and avoid distributed consensus issues.
-- **Canonical Store**: SQLite with Write-Ahead Logging (`WAL`), ACID transactions, table triggers, and decimal-string wei storage.
+- **Canonical Store**: PostgreSQL (PGlite or `pg`) behind the async `Db` in `apps/server/src/db/database.ts`: ACID transactions (savepoints when nested), PL/pgSQL triggers, `NUMERIC(78,0)` wei. Every repository call is async; never leave a query promise un-awaited inside `db.tx` (ESLint `no-floating-promises` enforces this).
 - **Event-Driven**: In-process event bus distributes round and trade lifecycle events to the SSE stream (`/api/stream`).
 - **Paper Trading by Default**: Live execution with real funds is strictly disabled unless explicitly armed and gated.
 
@@ -30,7 +30,7 @@ unified-bsc-predict/
 
 ### 2.1 Financial Math & Precision
 
-- **Wei Precision**: All BNB and token monetary amounts MUST be represented as `bigint` wei in memory and stored as decimal string / `TEXT` in SQLite.
+- **Wei Precision**: All BNB and token monetary amounts MUST be represented as `bigint` wei in memory and stored as `NUMERIC(78,0)` in PostgreSQL (read back as a decimal string, converted to `bigint`).
 - **NO Floating-Point for Money**: NEVER use JavaScript `number` (floats) for balance checks, stake amounts, payouts, or P&L. Floating-point math causes binary rounding drift.
 - **Oracle Prices**: Chainlink oracle prices are integer-scaled by 8 decimals (`1e8`, `PRICE_SCALE = 100_000_000`).
 - **Exact Contract Formulas**: Payouts must mirror `PancakePredictionV2.claim()` byte-for-byte:
@@ -46,7 +46,7 @@ unified-bsc-predict/
 ### 2.3 Idempotency & Database Integrity
 
 - **Guarded Transitions**: Every trade state transition must use guarded updates (`UPDATE trades SET status = :to WHERE uid = :uid AND status = :from`).
-- **Append-Only History**: `trade_events` and `audit_events` are strictly append-only, enforced by SQLite triggers.
+- **Append-Only History**: `trade_events` and `audit_events` are strictly append-only, enforced by PL/pgSQL triggers.
 - **Round Immutability**: Ended rounds are immutable. Chain data may replace imported CSV rounds via `round_corrections`, but chain-derived rounds are never mutated.
 - **Single Active Bet**: Unique partial index enforces at most one non-failed bet per round and wallet.
 
@@ -70,10 +70,10 @@ unified-bsc-predict/
 
 | Layer                 | Technologies / Versions                                                    |
 | --------------------- | -------------------------------------------------------------------------- |
-| **Runtime**           | Node.js ≥ 22.13 (Node 24 recommended, uses built-in `node:sqlite`)         |
+| **Runtime**           | Node.js ≥ 22.13 (Node 24 recommended)                                      |
 | **Package Manager**   | `npm` (workspaces: `packages/*`, `apps/*`)                                 |
 | **Language**          | TypeScript (target `ES2023`, module `ESNext`, `moduleResolution: Bundler`) |
-| **Database**          | Native `node:sqlite` (SQLite 3.53+, WAL mode)                              |
+| **Database**          | PostgreSQL: `@electric-sql/pglite` (embedded, default) or `pg` (Supabase)  |
 | **Web3 / Blockchain** | `viem` (Multicall3, BSC Mainnet 56 / Testnet 97)                           |
 | **Server Framework**  | Native Node HTTP / lightweight router, SSE for real-time                   |
 | **Frontend UI**       | Vite, React, Vanilla CSS tokens (no Tailwind)                              |

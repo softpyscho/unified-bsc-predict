@@ -83,8 +83,8 @@ const map = (r: Row): DecisionRecord => ({
 export class DecisionsRepo {
   constructor(private readonly db: Db) {}
 
-  insert(d: NewDecision): DecisionRecord {
-    const id = this.db.run(
+  async insert(d: NewDecision): Promise<DecisionRecord> {
+    const id = await this.db.insert(
       `INSERT INTO strategy_decisions (strategy_id, market_id, round_id, epoch, mode, signal, confidence, decision,
          direction, intended_amount, actual_amount, expected_edge, reason, rationale, risk_checks, inputs, indicators,
          error, trade_id, decided_at, seconds_to_lock)
@@ -113,39 +113,38 @@ export class DecisionsRepo {
         decidedAt: d.decidedAt,
         stl: d.secondsToLock,
       },
-    ).lastInsertRowid;
-    return this.get(id)!;
+    );
+    return (await this.get(id))!;
   }
 
-  get(id: number): DecisionRecord | undefined {
-    const r = this.db.get<Row>('SELECT * FROM strategy_decisions WHERE id = ?', [id]);
+  async get(id: number): Promise<DecisionRecord | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM strategy_decisions WHERE id = ?', [id]);
     return r ? map(r) : undefined;
   }
 
-  exists(strategyId: number, roundId: number, mode: TradeMode): boolean {
+  async exists(strategyId: number, roundId: number, mode: TradeMode): Promise<boolean> {
     return (
-      this.db.get('SELECT 1 FROM strategy_decisions WHERE strategy_id = ? AND round_id = ? AND mode = ?', [
-        strategyId,
-        roundId,
-        mode,
-      ]) !== undefined
+      (await this.db.get(
+        'SELECT 1 FROM strategy_decisions WHERE strategy_id = ? AND round_id = ? AND mode = ?',
+        [strategyId, roundId, mode],
+      )) !== undefined
     );
   }
 
-  attachTrade(id: number, tradeId: number): void {
-    this.db.run('UPDATE strategy_decisions SET trade_id = ? WHERE id = ?', [tradeId, id]);
+  async attachTrade(id: number, tradeId: number): Promise<void> {
+    await this.db.run('UPDATE strategy_decisions SET trade_id = ? WHERE id = ?', [tradeId, id]);
   }
 
-  forRound(roundId: number): DecisionRecord[] {
-    return this.db
-      .all<Row>('SELECT * FROM strategy_decisions WHERE round_id = ? ORDER BY id', [roundId])
-      .map(map);
+  async forRound(roundId: number): Promise<DecisionRecord[]> {
+    return (
+      await this.db.all<Row>('SELECT * FROM strategy_decisions WHERE round_id = ? ORDER BY id', [roundId])
+    ).map(map);
   }
 
-  list(
+  async list(
     f: { strategyId?: number; mode?: TradeMode; decision?: 'TRADE' | 'NO_TRADE'; epoch?: number },
     page: { limit: number; offset: number },
-  ): { rows: DecisionRecord[]; total: number } {
+  ): Promise<{ rows: DecisionRecord[]; total: number }> {
     const w: string[] = [];
     const p: Record<string, string | number> = {};
     const add = (sql: string, key: string, v: string | number | undefined) => {
@@ -158,14 +157,20 @@ export class DecisionsRepo {
     add('decision = :decision', 'decision', f.decision);
     add('epoch = :epoch', 'epoch', f.epoch);
     const clause = w.length > 0 ? `WHERE ${w.join(' AND ')}` : '';
-    const total = this.db.get<{ n: number }>(`SELECT count(*) AS n FROM strategy_decisions ${clause}`, p)!.n;
-    const rows = this.db
-      .all<Row>(`SELECT * FROM strategy_decisions ${clause} ORDER BY id DESC LIMIT :limit OFFSET :offset`, {
-        ...p,
-        limit: page.limit,
-        offset: page.offset,
-      })
-      .map(map);
+    const total = (await this.db.get<{ n: number }>(
+      `SELECT count(*) AS n FROM strategy_decisions ${clause}`,
+      p,
+    ))!.n;
+    const rows = (
+      await this.db.all<Row>(
+        `SELECT * FROM strategy_decisions ${clause} ORDER BY id DESC LIMIT :limit OFFSET :offset`,
+        {
+          ...p,
+          limit: page.limit,
+          offset: page.offset,
+        },
+      )
+    ).map(map);
     return { rows, total };
   }
 }

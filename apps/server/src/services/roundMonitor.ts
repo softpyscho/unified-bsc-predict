@@ -49,7 +49,7 @@ export class RoundMonitor {
     private readonly ctx: Ctx,
     private readonly markets: MarketService,
     private readonly history: HistorySync,
-    private readonly onFinalized: (rounds: StoredRound[]) => void,
+    private readonly onFinalized: (rounds: StoredRound[]) => Promise<unknown>,
   ) {}
 
   get state(): MarketState | null {
@@ -79,7 +79,7 @@ export class RoundMonitor {
     } catch (err) {
       this.failures++;
       if (this.failures === FAILURES_BEFORE_ALERT) {
-        audit.record({
+        await audit.record({
           component: 'round-monitor',
           severity: 'WARN',
           type: AuditType.RPC_UNAVAILABLE,
@@ -93,7 +93,7 @@ export class RoundMonitor {
       return null;
     }
     if (this.failures >= FAILURES_BEFORE_ALERT) {
-      audit.record({
+      await audit.record({
         component: 'round-monitor',
         severity: 'INFO',
         type: AuditType.RPC_RECOVERED,
@@ -119,8 +119,8 @@ export class RoundMonitor {
       // Final at the head but not yet at the confirmed depth: keep it non-final for now.
       if (FINAL_STATUSES.has(status) && !confirmed) status = 'CLOSING';
       const isFinal = FINAL_STATUSES.has(status);
-      const prev = this.ctx.repos.rounds.get(market.id, rec.epoch);
-      const res = this.ctx.repos.rounds.upsert(market.id, {
+      const prev = await this.ctx.repos.rounds.get(market.id, rec.epoch);
+      const res = await this.ctx.repos.rounds.upsert(market.id, {
         record,
         status,
         outcome: deriveOutcome(record, status),
@@ -132,7 +132,7 @@ export class RoundMonitor {
       });
       byEpoch.set(rec.epoch, res.round);
       if (prev && prev.status !== res.round.status) {
-        audit.record({
+        await audit.record({
           component: 'round-monitor',
           severity: 'DEBUG',
           type: AuditType.ROUND_UPDATED,
@@ -143,7 +143,7 @@ export class RoundMonitor {
       }
       if (isFinal && (res.result === 'finalized' || res.result === 'inserted')) {
         finalized.push(res.round);
-        audit.record({
+        await audit.record({
           component: 'round-monitor',
           severity: 'INFO',
           type: AuditType.ROUND_SETTLED,
@@ -161,7 +161,7 @@ export class RoundMonitor {
 
     if (this.lastEpoch === null || snapshot.currentEpoch > this.lastEpoch) {
       if (this.lastEpoch !== null) {
-        audit.record({
+        await audit.record({
           component: 'round-monitor',
           severity: 'INFO',
           type: AuditType.ROUND_DETECTED,
@@ -179,7 +179,7 @@ export class RoundMonitor {
       }
       this.lastEpoch = snapshot.currentEpoch;
     }
-    if (finalized.length > 0) this.onFinalized(finalized);
+    if (finalized.length > 0) await this.onFinalized(finalized);
 
     const next = byEpoch.get(snapshot.currentEpoch) ?? null;
     this.current = {
@@ -216,12 +216,12 @@ export class RoundMonitor {
   ): Promise<Map<number, { record: RoundRecord; chainTime: number }>> {
     const out = new Map<number, { record: RoundRecord; chainTime: number }>();
     const market = this.markets.tradable();
-    const candidates = snapshot.rounds.filter((r) => {
-      if (r.startTime === null) return false;
-      if (!FINAL_STATUSES.has(deriveRoundStatus(r, snapshot.blockTimestamp, params.bufferSeconds)))
-        return false;
-      return !this.ctx.repos.rounds.get(market.id, r.epoch)?.isFinal;
-    });
+    const candidates: RoundRecord[] = [];
+    for (const r of snapshot.rounds) {
+      if (r.startTime === null) continue;
+      if (!FINAL_STATUSES.has(deriveRoundStatus(r, snapshot.blockTimestamp, params.bufferSeconds))) continue;
+      if (!(await this.ctx.repos.rounds.get(market.id, r.epoch))?.isFinal) candidates.push(r);
+    }
     if (candidates.length === 0) return out;
     const confirmations = BigInt(this.ctx.config.confirmations);
     if (confirmations === 0n) {

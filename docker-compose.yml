@@ -1,4 +1,20 @@
 services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bsc_predict
+      POSTGRES_USER: bsc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Not published: only the app container reaches the database.
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bsc -d bsc_predict']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   app:
     build:
       context: .
@@ -6,8 +22,11 @@ services:
     env_file: .env
     environment:
       HOST: 0.0.0.0
-      DATABASE_URL: file:/app/data/bsc-predict.db
+      DATABASE_URL: postgres://bsc:${POSTGRES_PASSWORD}@db:5432/bsc_predict
       LOG_DIR: /app/logs
+    depends_on:
+      db:
+        condition: service_healthy
     # Published on localhost only. Put a TLS reverse proxy in front before exposing it further.
     ports:
       - '127.0.0.1:8080:8080'

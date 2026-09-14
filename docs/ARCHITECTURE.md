@@ -20,13 +20,17 @@ of the round/payout logic. Everything is now TypeScript: the core payout, risk a
 and used by the server (live/paper), the backtester and the dashboard.
 
 **Why one process.** Ingestion, strategy evaluation, execution and settlement must share one view of round state
-and one transaction boundary. A single process with an in-process event bus and SQLite (WAL) gives that without
-distributed-state problems. The bot's desired state lives in the database, so the CLI can control a running server.
+and one transaction boundary. A single process with an in-process event bus and one PostgreSQL database gives that
+without distributed-state problems. The bot's desired state lives in the database, so the CLI can control a running
+server.
 
-**Why SQLite.** A single-writer trading bot is SQLite's ideal workload: ACID transactions, unique constraints,
-triggers, zero operational overhead, a single file to back up. Money is stored as decimal-string wei, so nothing
-depends on 64-bit integer limits. (Moving to PostgreSQL would only require reimplementing `db/database.ts` and the
-DDL; repositories use portable SQL.)
+**Why PostgreSQL (embedded or hosted).** The same schema has to run on a laptop, a VPS and Supabase, so that a
+hosted dashboard can read what a self-hosted worker writes. `db/database.ts` exposes one async API over two
+engines: PGlite (Postgres compiled to WASM, a local directory, nothing to install; the default) and `pg` pools for
+any server. It translates `?`/`:name` placeholders, keeps the current transaction in `AsyncLocalStorage` (nested
+transactions become savepoints; PGlite serialises every other query behind an open transaction), and parses
+`INT8` as a number and `NUMERIC` as a string. Money is `NUMERIC(78,0)` wei, read back as `bigint`, so nothing
+depends on 64-bit integer limits. Append-only tables and final-round immutability are PL/pgSQL triggers.
 
 ## Data flow
 
@@ -38,7 +42,7 @@ flowchart TD
     IMPORT[CSV importer]
     SYNC[History sync<br/>initial · incremental · reconcile]
     MON[Round monitor<br/>1 pinned snapshot / poll]
-    DB[(SQLite — canonical store<br/>markets · rounds · trades · decisions<br/>claims · snapshots · audit)]
+    DB[(PostgreSQL — canonical store<br/>markets · rounds · trades · decisions<br/>claims · snapshots · audit)]
     ENG[Strategy engine]
     RISK[Risk engine + live gate]
     EXE[Execution<br/>paper adapter · live adapter]

@@ -81,22 +81,22 @@ const map = (r: Row): Market => ({
 export class MarketsRepo {
   constructor(private readonly db: Db) {}
 
-  list(): Market[] {
-    return this.db.all<Row>('SELECT * FROM markets ORDER BY tradable DESC, id').map(map);
+  async list(): Promise<Market[]> {
+    return (await this.db.all<Row>('SELECT * FROM markets ORDER BY tradable DESC, id')).map(map);
   }
 
-  get(id: number): Market | undefined {
-    const r = this.db.get<Row>('SELECT * FROM markets WHERE id = ?', [id]);
+  async get(id: number): Promise<Market | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM markets WHERE id = ?', [id]);
     return r ? map(r) : undefined;
   }
 
-  bySlug(slug: string): Market | undefined {
-    const r = this.db.get<Row>('SELECT * FROM markets WHERE slug = ?', [slug]);
+  async bySlug(slug: string): Promise<Market | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM markets WHERE slug = ?', [slug]);
     return r ? map(r) : undefined;
   }
 
-  upsert(m: MarketInput): Market {
-    this.db.run(
+  async upsert(m: MarketInput): Promise<Market> {
+    await this.db.run(
       `INSERT INTO markets (slug, name, symbol, underlying_asset, quote_asset, chain, chain_id, contract_address,
          protocol, timing, tradable, active, interval_seconds, buffer_seconds, treasury_fee_bps, min_bet_wei,
          oracle_address, description)
@@ -131,11 +131,11 @@ export class MarketsRepo {
         now: nowIso(),
       },
     );
-    return this.bySlug(m.slug)!;
+    return (await this.bySlug(m.slug))!;
   }
 
   /** Stores parameters read from the contract so they are never hard-coded. */
-  updateParams(
+  async updateParams(
     id: number,
     p: {
       intervalSeconds: number;
@@ -144,8 +144,8 @@ export class MarketsRepo {
       minBetWei: bigint;
       oracleAddress: string;
     },
-  ): void {
-    this.db.run(
+  ): Promise<void> {
+    await this.db.run(
       `UPDATE markets SET interval_seconds = ?, buffer_seconds = ?, treasury_fee_bps = ?, min_bet_wei = ?,
          oracle_address = ?, updated_at = ? WHERE id = ?`,
       [

@@ -58,7 +58,7 @@ export class HistorySync {
   constructor(
     private readonly ctx: Ctx,
     private readonly markets: MarketService,
-    private readonly onFinalized: (rounds: StoredRound[]) => void,
+    private readonly onFinalized: (rounds: StoredRound[]) => Promise<unknown>,
   ) {}
 
   async syncEpochs(
@@ -85,7 +85,7 @@ export class HistorySync {
       .filter((e) => e > 0 && e <= first.head.currentEpoch)
       .sort((a, b) => a - b);
     if (!opts.includeFinal && todo.length > 0) {
-      const finals = repos.rounds.finalEpochsIn(market.id, todo[0]!, todo.at(-1)!);
+      const finals = await repos.rounds.finalEpochsIn(market.id, todo[0]!, todo.at(-1)!);
       todo = todo.filter((e) => !finals.has(e));
     }
     const summary = empty();
@@ -112,7 +112,7 @@ export class HistorySync {
       const pinBlock = pinned.block;
       const chainTime = pinned.head.blockTimestamp;
       const finalized: StoredRound[] = [];
-      repos.db.tx(() => {
+      await repos.db.tx(async () => {
         for (const rec of records) {
           summary.fetched++;
           if (rec.startTime === null) {
@@ -121,7 +121,7 @@ export class HistorySync {
           }
           const status = deriveRoundStatus(rec, chainTime, params.bufferSeconds);
           const outcome = deriveOutcome(rec, status);
-          const res = repos.rounds.upsert(market.id, {
+          const res = await repos.rounds.upsert(market.id, {
             record: rec,
             status,
             outcome,
@@ -133,7 +133,7 @@ export class HistorySync {
           });
           tally(summary, res.result);
           if (res.result === 'corrected') {
-            this.ctx.audit.record({
+            await this.ctx.audit.record({
               component: 'history-sync',
               severity: 'WARN',
               type: AuditType.ROUND_CORRECTED,
@@ -142,7 +142,7 @@ export class HistorySync {
               message: `imported data for round ${rec.epoch} differed from chain; corrected (previous values kept)`,
             });
           } else if (res.result === 'conflict') {
-            this.ctx.audit.record({
+            await this.ctx.audit.record({
               component: 'history-sync',
               severity: 'ERROR',
               type: AuditType.ROUND_CONFLICT,
@@ -161,10 +161,10 @@ export class HistorySync {
       });
       done += batch.length;
       opts.onProgress?.(done, todo.length);
-      if (finalized.length > 0) this.onFinalized(finalized);
+      if (finalized.length > 0) await this.onFinalized(finalized);
     });
 
-    repos.sync.update(market.id, { lastSyncedEpoch: first.head.currentEpoch, synced: true });
+    await repos.sync.update(market.id, { lastSyncedEpoch: first.head.currentEpoch, synced: true });
     return summary;
   }
 
@@ -172,7 +172,7 @@ export class HistorySync {
   async syncAll(fromEpoch = 1, onProgress?: (done: number, total: number) => void): Promise<SyncSummary> {
     const head = await withRetry(() => this.ctx.reader.getHead());
     const summary = await this.syncEpochs(range(fromEpoch, head.currentEpoch), { onProgress });
-    this.auditSync('full', summary);
+    await this.auditSync('full', summary);
     return summary;
   }
 
@@ -184,12 +184,12 @@ export class HistorySync {
   async syncIncremental(opts: { maxEpochs?: number } = {}): Promise<SyncSummary> {
     const market = this.markets.tradable();
     const head = await withRetry(() => this.ctx.reader.getHead());
-    const lastFinal = this.ctx.repos.rounds.maxEpoch(market.id, true);
+    const lastFinal = await this.ctx.repos.rounds.maxEpoch(market.id, true);
     let from = lastFinal === null ? Math.max(1, head.currentEpoch - GAP_WINDOW) : lastFinal + 1;
     if (opts.maxEpochs !== undefined) from = Math.max(from, head.currentEpoch - opts.maxEpochs);
-    const pending = this.ctx.repos.rounds.nonFinal(market.id, head.currentEpoch).map((r) => r.epoch);
+    const pending = (await this.ctx.repos.rounds.nonFinal(market.id, head.currentEpoch)).map((r) => r.epoch);
     const summary = await this.syncEpochs([...range(from, head.currentEpoch), ...pending]);
-    if (summary.requested > 3) this.auditSync('incremental', summary);
+    if (summary.requested > 3) await this.auditSync('incremental', summary);
     return summary;
   }
 
@@ -207,26 +207,26 @@ export class HistorySync {
     const market = this.markets.tradable();
     const head = await withRetry(() => this.ctx.reader.getHead());
 
-    const staleEpochs = repos.rounds.nonFinal(market.id, head.currentEpoch - 2).map((r) => r.epoch);
+    const staleEpochs = (await repos.rounds.nonFinal(market.id, head.currentEpoch - 2)).map((r) => r.epoch);
     const stale = await this.syncEpochs(staleEpochs);
 
     const windowFrom = Math.max(1, head.currentEpoch - GAP_WINDOW);
     const gaps = await this.syncEpochs(range(windowFrom, head.currentEpoch - 1));
 
-    const stats = repos.rounds.stats(market.id);
+    const stats = await repos.rounds.stats(market.id);
     let sweep = empty();
     let sweepRange: [number, number] | null = null;
     if (stats.minEpoch !== null && stats.maxEpoch !== null) {
-      const state = repos.sync.get(market.id);
+      const state = await repos.sync.get(market.id);
       let start = state.reconcileCursor ?? stats.minEpoch;
       if (start > stats.maxEpoch) start = stats.minEpoch;
       const end = Math.min(start + VERIFY_SWEEP - 1, stats.maxEpoch);
       sweep = await this.syncEpochs(range(start, end), { includeFinal: true });
       sweepRange = [start, end];
-      repos.sync.update(market.id, { reconcileCursor: end + 1 });
+      await repos.sync.update(market.id, { reconcileCursor: end + 1 });
     }
-    repos.sync.update(market.id, { reconciled: true });
-    this.ctx.audit.record({
+    await repos.sync.update(market.id, { reconciled: true });
+    await this.ctx.audit.record({
       component: 'history-sync',
       severity: stale.conflicts + gaps.conflicts + sweep.conflicts > 0 ? 'ERROR' : 'INFO',
       type: AuditType.RECONCILE_COMPLETED,
@@ -237,8 +237,8 @@ export class HistorySync {
     return { stale, gaps, sweep, sweepRange };
   }
 
-  private auditSync(kind: string, s: SyncSummary): void {
-    this.ctx.audit.record({
+  private async auditSync(kind: string, s: SyncSummary): Promise<void> {
+    await this.ctx.audit.record({
       component: 'history-sync',
       severity: s.conflicts > 0 ? 'ERROR' : 'INFO',
       type: AuditType.HISTORY_SYNCED,

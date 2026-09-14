@@ -47,6 +47,17 @@ export interface RoundWrite {
 export type UpsertResult =
   'inserted' | 'updated' | 'finalized' | 'unchanged' | 'corrected' | 'conflict' | 'stale';
 
+export interface RoundStats {
+  total: number;
+  final: number;
+  minEpoch: number | null;
+  maxEpoch: number | null;
+  bull: number;
+  bear: number;
+  tie: number;
+  cancelled: number;
+}
+
 interface Row {
   id: number;
   market_id: number;
@@ -162,58 +173,70 @@ export interface RoundFilter {
 }
 
 export class RoundsRepo {
-  private readonly statsCache = new Map<number, { at: number; value: ReturnType<RoundsRepo['stats']> }>();
+  private readonly statsCache = new Map<number, { at: number; value: RoundStats }>();
 
   constructor(private readonly db: Db) {}
 
-  get(marketId: number, epoch: number): StoredRound | undefined {
-    const r = this.db.get<Row>('SELECT * FROM rounds_v WHERE market_id = ? AND epoch = ?', [marketId, epoch]);
+  async get(marketId: number, epoch: number): Promise<StoredRound | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM rounds_v WHERE market_id = ? AND epoch = ?', [
+      marketId,
+      epoch,
+    ]);
     return r ? map(r) : undefined;
   }
 
-  getById(id: number): StoredRound | undefined {
-    const r = this.db.get<Row>('SELECT * FROM rounds_v WHERE id = ?', [id]);
+  async getById(id: number): Promise<StoredRound | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM rounds_v WHERE id = ?', [id]);
     return r ? map(r) : undefined;
   }
 
-  upsert(
+  async upsert(
     marketId: number,
     w: RoundWrite,
-  ): { result: UpsertResult; round: StoredRound; previous?: StoredRound } {
-    return this.db.tx(() => {
-      const existing = this.get(marketId, w.record.epoch);
+  ): Promise<{ result: UpsertResult; round: StoredRound; previous?: StoredRound }> {
+    return this.db.tx(async () => {
+      const existing = await this.get(marketId, w.record.epoch);
       if (existing) {
         if (existing.isFinal) {
           if (!w.isFinal) return { result: 'stale' as const, round: existing };
           if (finalDataEqual(existing, w.record) && existing.outcome === w.outcome) {
             if (existing.source === 'CSV_IMPORT' && w.source === 'CHAIN')
-              this.write(existing.id, marketId, w, true);
+              await this.write(existing.id, marketId, w, true);
             return { result: 'unchanged' as const, round: existing };
           }
           if (existing.source === 'CSV_IMPORT' && w.source === 'CHAIN') {
-            this.db.run(
+            await this.db.run(
               'INSERT INTO round_corrections (round_id, previous, corrected, source) VALUES (?, ?, ?, ?)',
               [existing.id, stringify(existing), stringify(w.record), w.source],
             );
-            this.write(existing.id, marketId, w, true);
-            return { result: 'corrected' as const, round: this.getById(existing.id)!, previous: existing };
+            await this.write(existing.id, marketId, w, true);
+            return {
+              result: 'corrected' as const,
+              round: (await this.getById(existing.id))!,
+              previous: existing,
+            };
           }
           return { result: 'conflict' as const, round: existing };
         }
         if (sameData(existing, w)) return { result: 'unchanged' as const, round: existing };
-        this.write(existing.id, marketId, w, w.isFinal);
+        await this.write(existing.id, marketId, w, w.isFinal);
         return {
           result: w.isFinal ? ('finalized' as const) : ('updated' as const),
-          round: this.getById(existing.id)!,
+          round: (await this.getById(existing.id))!,
           previous: existing,
         };
       }
-      const id = this.write(null, marketId, w, w.isFinal);
-      return { result: 'inserted' as const, round: this.getById(id)! };
+      const id = await this.write(null, marketId, w, w.isFinal);
+      return { result: 'inserted' as const, round: (await this.getById(id))! };
     });
   }
 
-  private write(id: number | null, marketId: number, w: RoundWrite, finalizing: boolean): number {
+  private async write(
+    id: number | null,
+    marketId: number,
+    w: RoundWrite,
+    finalizing: boolean,
+  ): Promise<number> {
     const r = w.record;
     const params = {
       marketId,
@@ -246,7 +269,7 @@ export class RoundsRepo {
       finalizedAt: finalizing ? nowIso() : null,
     };
     if (id === null) {
-      return this.db.run(
+      return this.db.insert(
         `INSERT INTO rounds (market_id, epoch, start_time, lock_time, close_time, start_block, lock_block, close_block,
            lock_price, close_price, lock_oracle_id, close_oracle_id, total_amount, bull_amount, bear_amount,
            reward_base_cal_amount, reward_amount, oracle_called, bull_payout, bear_payout, status, outcome, is_final,
@@ -255,10 +278,9 @@ export class RoundsRepo {
            :closePrice, :lockOracleId, :closeOracleId, :total, :bull, :bear, :base, :reward, :oracleCalled, :bullPayout,
            :bearPayout, :status, :outcome, :isFinal, :source, :observedBlock, :observedAt, :extra, :finalizedAt)`,
         params,
-      ).lastInsertRowid;
+      );
     }
-    const { marketId: _marketId, epoch: _epoch, ...updateParams } = params;
-    this.db.run(
+    await this.db.run(
       `UPDATE rounds SET start_time = :startTime, lock_time = :lockTime, close_time = :closeTime,
          start_block = COALESCE(:startBlock, start_block), lock_block = COALESCE(:lockBlock, lock_block),
          close_block = COALESCE(:closeBlock, close_block), lock_price = :lockPrice, close_price = :closePrice,
@@ -268,12 +290,12 @@ export class RoundsRepo {
          is_final = :isFinal, source = :source, observed_block = :observedBlock, observed_at = :observedAt,
          extra = COALESCE(:extra, extra), finalized_at = COALESCE(finalized_at, :finalizedAt), updated_at = :now
        WHERE id = :id`,
-      { ...updateParams, id, now: nowIso() },
+      { ...params, id, now: nowIso() },
     );
     return id;
   }
 
-  list(f: RoundFilter): { rows: StoredRound[]; total: number } {
+  async list(f: RoundFilter): Promise<{ rows: StoredRound[]; total: number }> {
     const where = ['market_id = :marketId'];
     const p: Record<string, number | string> = { marketId: f.marketId };
     const add = (sql: string, key: string, v: string | number | undefined) => {
@@ -289,22 +311,19 @@ export class RoundsRepo {
     add('status = :status', 'status', f.status);
     if (f.finalOnly) where.push('is_final = 1');
     const clause = where.join(' AND ');
-    const total = this.db.get<{ n: number }>(`SELECT count(*) AS n FROM rounds WHERE ${clause}`, p)!.n;
-    const rows = this.db
-      .all<Row>(
+    const total = (await this.db.get<{ n: number }>(`SELECT count(*) AS n FROM rounds WHERE ${clause}`, p))!
+      .n;
+    const rows = (
+      await this.db.all<Row>(
         `SELECT * FROM rounds_v WHERE ${clause} ORDER BY epoch ${f.order === 'asc' ? 'ASC' : 'DESC'} LIMIT :limit OFFSET :offset`,
-        {
-          ...p,
-          limit: f.limit,
-          offset: f.offset,
-        },
+        { ...p, limit: f.limit, offset: f.offset },
       )
-      .map(map);
+    ).map(map);
     return { rows, total };
   }
 
-  maxEpoch(marketId: number, finalOnly = false): number | null {
-    const r = this.db.get<{ m: number | null }>(
+  async maxEpoch(marketId: number, finalOnly = false): Promise<number | null> {
+    const r = await this.db.get<{ m: number | null }>(
       `SELECT max(epoch) AS m FROM rounds WHERE market_id = ? ${finalOnly ? 'AND is_final = 1' : ''}`,
       [marketId],
     );
@@ -312,39 +331,26 @@ export class RoundsRepo {
   }
 
   /** Round counts for a market. `maxAgeMs` > 0 allows a cached value (dashboard endpoints). */
-  stats(
-    marketId: number,
-    maxAgeMs = 0,
-  ): {
-    total: number;
-    final: number;
-    minEpoch: number | null;
-    maxEpoch: number | null;
-    bull: number;
-    bear: number;
-    tie: number;
-    cancelled: number;
-  } {
+  async stats(marketId: number, maxAgeMs = 0): Promise<RoundStats> {
     const cached = this.statsCache.get(marketId);
     if (cached && maxAgeMs > 0 && Date.now() - cached.at < maxAgeMs) return cached.value;
-    // Index-only queries (outcome index, unique (market, epoch), (market, is_final, epoch)).
     const byOutcome = new Map(
-      this.db
-        .all<{ outcome: string | null; n: number }>(
+      (
+        await this.db.all<{ outcome: string | null; n: number }>(
           'SELECT outcome, count(*) AS n FROM rounds WHERE market_id = ? GROUP BY outcome',
           [marketId],
         )
-        .map((r) => [r.outcome, r.n]),
+      ).map((r) => [r.outcome, r.n]),
     );
-    const span = this.db.get<{ minEpoch: number | null; maxEpoch: number | null }>(
-      'SELECT min(epoch) AS minEpoch, max(epoch) AS maxEpoch FROM rounds WHERE market_id = ?',
+    const span = (await this.db.get<{ minEpoch: number | null; maxEpoch: number | null }>(
+      'SELECT min(epoch) AS "minEpoch", max(epoch) AS "maxEpoch" FROM rounds WHERE market_id = ?',
       [marketId],
-    )!;
-    const final = this.db.get<{ n: number }>(
+    ))!;
+    const final = (await this.db.get<{ n: number }>(
       'SELECT count(*) AS n FROM rounds WHERE market_id = ? AND is_final = 1',
       [marketId],
-    )!.n;
-    const value = {
+    ))!.n;
+    const value: RoundStats = {
       total: [...byOutcome.values()].reduce((a, n) => a + n, 0),
       final,
       minEpoch: span.minEpoch,
@@ -359,8 +365,8 @@ export class RoundsRepo {
   }
 
   /** Epochs in [from, to] that exist and are final. */
-  finalEpochsIn(marketId: number, from: number, to: number): Set<number> {
-    const rows = this.db.all<{ epoch: number }>(
+  async finalEpochsIn(marketId: number, from: number, to: number): Promise<Set<number>> {
+    const rows = await this.db.all<{ epoch: number }>(
       'SELECT epoch FROM rounds WHERE market_id = ? AND epoch BETWEEN ? AND ? AND is_final = 1',
       [marketId, from, to],
     );
@@ -368,63 +374,67 @@ export class RoundsRepo {
   }
 
   /** Non-final rounds at or below `maxEpoch` — reconciliation candidates. */
-  nonFinal(marketId: number, maxEpoch: number, limit = 1000): StoredRound[] {
-    return this.db
-      .all<Row>(
+  async nonFinal(marketId: number, maxEpoch: number, limit = 1000): Promise<StoredRound[]> {
+    return (
+      await this.db.all<Row>(
         'SELECT * FROM rounds_v WHERE market_id = ? AND is_final = 0 AND epoch <= ? ORDER BY epoch LIMIT ?',
         [marketId, maxEpoch, limit],
       )
-      .map(map);
+    ).map(map);
   }
 
   /** The most recent final rounds before `beforeEpoch`, ascending — history for live strategy context. */
-  recentFinal(marketId: number, beforeEpoch: number, limit: number): FinalRound[] {
-    return this.db
-      .all<Row>(
+  async recentFinal(marketId: number, beforeEpoch: number, limit: number): Promise<FinalRound[]> {
+    return (
+      await this.db.all<Row>(
         'SELECT * FROM rounds_v WHERE market_id = ? AND epoch < ? AND is_final = 1 ORDER BY epoch DESC LIMIT ?',
         [marketId, beforeEpoch, limit],
       )
+    )
       .map(map)
       .reverse() as FinalRound[];
   }
 
   /** Final, timestamped rounds starting in [fromTime, toTime], ascending — backtest input. */
-  finalForBacktest(marketId: number, fromTime: number, toTime: number): FinalRound[] {
-    const out: FinalRound[] = [];
-    for (const r of this.db.iterate<Row>(
-      `SELECT * FROM rounds_v WHERE market_id = ? AND is_final = 1 AND start_time BETWEEN ? AND ?
-         AND lock_time IS NOT NULL AND close_time IS NOT NULL ORDER BY epoch`,
-      [marketId, fromTime, toTime],
-    )) {
-      out.push(map(r) as FinalRound);
-    }
-    return out;
+  async finalForBacktest(marketId: number, fromTime: number, toTime: number): Promise<FinalRound[]> {
+    return (
+      await this.db.all<Row>(
+        `SELECT * FROM rounds_v WHERE market_id = ? AND is_final = 1 AND start_time BETWEEN ? AND ?
+           AND lock_time IS NOT NULL AND close_time IS NOT NULL ORDER BY epoch`,
+        [marketId, fromTime, toTime],
+      )
+    ).map((r) => map(r) as FinalRound);
   }
 
-  corrections(
+  async corrections(
     roundId: number,
-  ): { id: number; previous: unknown; corrected: unknown; source: string; detectedAt: string }[] {
-    return this.db
-      .all<{ id: number; previous: string; corrected: string; source: string; detected_at: string }>(
-        'SELECT * FROM round_corrections WHERE round_id = ? ORDER BY id',
-        [roundId],
-      )
-      .map((r) => ({
-        id: r.id,
-        previous: parseJson(r.previous, null),
-        corrected: parseJson(r.corrected, null),
-        source: r.source,
-        detectedAt: r.detected_at,
-      }));
+  ): Promise<{ id: number; previous: unknown; corrected: unknown; source: string; detectedAt: string }[]> {
+    return (
+      await this.db.all<{
+        id: number;
+        previous: string;
+        corrected: string;
+        source: string;
+        detected_at: string;
+      }>('SELECT * FROM round_corrections WHERE round_id = ? ORDER BY id', [roundId])
+    ).map((r) => ({
+      id: r.id,
+      previous: parseJson(r.previous, null),
+      corrected: parseJson(r.corrected, null),
+      source: r.source,
+      detectedAt: r.detected_at,
+    }));
   }
 
   /** Start times of the first and last final rounds (start time grows with epoch). */
-  timeRange(marketId: number): { minStart: number | null; maxStart: number | null } {
-    const at = (order: 'ASC' | 'DESC') =>
-      this.db.get<{ t: number | null }>(
-        `SELECT start_time AS t FROM rounds WHERE market_id = ? AND is_final = 1 ORDER BY epoch ${order} LIMIT 1`,
-        [marketId],
+  async timeRange(marketId: number): Promise<{ minStart: number | null; maxStart: number | null }> {
+    const at = async (order: 'ASC' | 'DESC') =>
+      (
+        await this.db.get<{ t: number | null }>(
+          `SELECT start_time AS t FROM rounds WHERE market_id = ? AND is_final = 1 ORDER BY epoch ${order} LIMIT 1`,
+          [marketId],
+        )
       )?.t ?? null;
-    return { minStart: at('ASC'), maxStart: at('DESC') };
+    return { minStart: await at('ASC'), maxStart: await at('DESC') };
   }
 }

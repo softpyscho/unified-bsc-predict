@@ -32,16 +32,16 @@ export class RecoveryService {
 
   async run(): Promise<Record<string, unknown>> {
     const { bot, markets, history, walletSync, settlement, txReconciler, portfolio } = this.deps;
-    bot.setPhase('RECOVERING');
-    this.ctx.audit.record({
+    await bot.setPhase('RECOVERING');
+    await this.ctx.audit.record({
       component: 'recovery',
       severity: 'INFO',
       type: AuditType.RECOVERY_STARTED,
       message: 'startup recovery started',
     });
-    const interrupted = this.ctx.repos.backtests.failInterrupted();
+    const interrupted = await this.ctx.repos.backtests.failInterrupted();
     const results: Record<string, unknown> = { interruptedBacktests: interrupted };
-    const steps: [string, () => Promise<unknown> | unknown][] = [
+    const steps: [string, () => Promise<unknown>][] = [
       ['contractParams', () => markets.params(0)],
       ['pendingTransactions', () => txReconciler.run()],
       // Recent window + every non-final stored round (which includes the rounds of all open trades).
@@ -54,7 +54,7 @@ export class RecoveryService {
       try {
         results[name] = await step();
       } catch (err) {
-        this.ctx.audit.record({
+        await this.ctx.audit.record({
           component: 'recovery',
           severity: 'ERROR',
           type: AuditType.RECOVERY_FAILED,
@@ -63,14 +63,14 @@ export class RecoveryService {
         throw err;
       }
     }
-    const state = this.ctx.repos.bot.get();
+    const state = await this.ctx.repos.bot.get();
     if (state.liveArmed && !this.ctx.config.botAutoResumeLive) {
-      bot.disarmLive(
+      await bot.disarmLive(
         'process restarted; re-arm live trading from the dashboard (BOT_AUTO_RESUME_LIVE=false)',
       );
     }
-    bot.setPhase('READY');
-    this.ctx.audit.record({
+    await bot.setPhase('READY');
+    await this.ctx.audit.record({
       component: 'recovery',
       severity: 'INFO',
       type: AuditType.RECOVERY_COMPLETED,

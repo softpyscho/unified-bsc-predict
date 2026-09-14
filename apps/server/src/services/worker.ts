@@ -72,7 +72,7 @@ export class Worker {
     const d = this.deps;
     this.every('tx-reconciler', 15_000, () => d.txReconciler.run());
     this.every('settlement', 30_000, () => d.settlement.settleAll());
-    this.every('claims', 60_000, async () => (d.bot.canTrade() ? d.claims.run() : null));
+    this.every('claims', 60_000, async () => ((await d.bot.canTrade()) ? d.claims.run() : null));
     this.every('wallet-sync', config.walletSyncIntervalMs, () => d.walletSync.syncAll());
     this.every('history-incremental', 5 * 60_000, () => d.history.syncIncremental());
     this.every('reconcile', config.reconcileIntervalMs, () => d.history.reconcile());

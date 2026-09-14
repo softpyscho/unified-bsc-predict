@@ -14,7 +14,7 @@ export const BOB: Address = '0x2222222222222222222222222222222222222222';
 export function testEnv(overrides: Record<string, string> = {}): Record<string, string> {
   return {
     ADMIN_API_TOKEN: TOKEN,
-    DATABASE_URL: ':memory:',
+    DATABASE_URL: 'memory:',
     LOG_DIR: 'none',
     LOG_LEVEL: 'silent',
     CONFIRMATIONS: '0',
@@ -38,9 +38,9 @@ export interface Harness {
   privateKey: `0x${string}` | null;
 }
 
-export function makeHarness(
+export async function makeHarness(
   opts: { live?: boolean; env?: Record<string, string>; chain?: FakeChain; privateKey?: `0x${string}` } = {},
-): Harness {
+): Promise<Harness> {
   const chain = opts.chain ?? new FakeChain();
   if (!opts.chain) chain.boot();
   const privateKey = opts.live ? (opts.privateKey ?? generatePrivateKey()) : null;
@@ -51,7 +51,7 @@ export function makeHarness(
     }),
   );
   const writer = opts.live ? new FakeWriter(chain, config.walletAddress!) : null;
-  const app = createApp(config, {
+  const app = await createApp(config, {
     reader: chain,
     writer,
     loggers: silentLoggers(),

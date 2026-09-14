@@ -24,15 +24,16 @@ export class ClaimService {
     const { repos, config, writer, reader } = this.ctx;
     if (!writer) return skip('no signing wallet');
     if (!config.liveTradingEnabled) return skip('LIVE_TRADING_ENABLED is false');
-    if (repos.bot.get().status === 'EMERGENCY_STOPPED') return skip('bot is emergency-stopped');
+    // Claimed before the first await so two concurrent runs can never both proceed.
     if (this.running) return skip('a claim is already in progress');
-    const wallet = repos.wallets.signer();
-    const market = repos.markets.bySlug(config.marketSlug);
-    if (!wallet || !market) return skip('no signer wallet / market');
-
     this.running = true;
     try {
-      const unclaimed = repos.trades.unclaimed(wallet.id, market.id);
+      if ((await repos.bot.get()).status === 'EMERGENCY_STOPPED') return skip('bot is emergency-stopped');
+      const wallet = await repos.wallets.signer();
+      const market = await repos.markets.bySlug(config.marketSlug);
+      if (!wallet || !market) return skip('no signer wallet / market');
+
+      const unclaimed = await repos.trades.unclaimed(wallet.id, market.id);
       if (unclaimed.length === 0) return skip('nothing to claim');
       const oldest = Math.min(...unclaimed.map((t) => t.settledAt ?? 0)) * 1000;
       if (
@@ -52,7 +53,11 @@ export class ClaimService {
         if (claimable.has(t.epoch)) continue;
         const ledger = await reader.getLedger(t.epoch, writer.address);
         if (ledger.claimed)
-          repos.trades.patch(t.id, { claimStatus: 'CLAIMED' }, 'already claimed on-chain (outside this app)');
+          await repos.trades.patch(
+            t.id,
+            { claimStatus: 'CLAIMED' },
+            'already claimed on-chain (outside this app)',
+          );
         else
           this.ctx.log.tx.warn({ tradeId: t.id, epoch: t.epoch }, 'settled trade not claimable on-chain yet');
       }
@@ -60,32 +65,36 @@ export class ClaimService {
       if (toClaim.length === 0) return skip('no on-chain claimable rounds');
       const epochs = toClaim.map((t) => t.epoch);
 
-      const claim = repos.claims.insert({ walletId: wallet.id, marketId: market.id, epochs });
+      const claim = await repos.claims.insert({ walletId: wallet.id, marketId: market.id, epochs });
       let prepared;
       try {
         prepared = await writer.prepareClaim(epochs);
       } catch (err) {
         const e = classifyError(err);
-        repos.claims.update(claim.id, { status: 'FAILED', error: e.message });
-        this.auditFailure(claim, e.message);
+        await repos.claims.update(claim.id, { status: 'FAILED', error: e.message });
+        await this.auditFailure(claim, e.message);
         return { claimedEpochs: [], skipped: `claim simulation failed: ${e.message}`, claimId: claim.id };
       }
-      repos.claims.update(claim.id, { txHash: prepared.hash, status: 'SUBMITTED' });
+      await repos.claims.update(claim.id, { txHash: prepared.hash, status: 'SUBMITTED' });
       for (const t of toClaim)
-        repos.trades.patch(t.id, { claimStatus: 'CLAIMING', claimId: claim.id }, `claim tx ${prepared.hash}`);
+        await repos.trades.patch(
+          t.id,
+          { claimStatus: 'CLAIMING', claimId: claim.id },
+          `claim tx ${prepared.hash}`,
+        );
       try {
         await writer.broadcast(prepared);
       } catch (err) {
         const e = classifyError(err);
         if (!e.maybeBroadcast) {
-          this.revert(claim.id, toClaim, e.message);
+          await this.revert(claim.id, toClaim, e.message);
           return { claimedEpochs: [], skipped: `broadcast failed: ${e.message}`, claimId: claim.id };
         }
       }
       const receipt = await writer.waitForReceipt(prepared.hash, RECEIPT_TIMEOUT_MS);
       if (!receipt)
         return { claimedEpochs: [], skipped: 'claim submitted; awaiting receipt', claimId: claim.id };
-      const applied = this.applyReceipt(repos.claims.get(claim.id)!, receipt);
+      const applied = await this.applyReceipt((await repos.claims.get(claim.id))!, receipt);
       return {
         claimedEpochs: applied ? epochs : [],
         skipped: applied ? null : 'claim reverted',
@@ -100,19 +109,17 @@ export class ClaimService {
   }
 
   /** Applies a claim receipt; returns true when the claim succeeded. Also used by the reconciler. */
-  applyReceipt(claim: Claim, receipt: TxReceipt): boolean {
+  async applyReceipt(claim: Claim, receipt: TxReceipt): Promise<boolean> {
     const { repos } = this.ctx;
-    const trades = claim.epochs
-      .map((e) => repos.trades.findLive(claim.walletId, claim.marketId, e))
-      .filter((t): t is Trade => t !== undefined && t.claimId === claim.id);
+    const trades = await this.tradesOf(claim);
     const gasCost = receipt.gasUsed * receipt.effectiveGasPrice;
-    this.attributeGas(trades, gasCost);
+    await this.attributeGas(trades, gasCost);
     if (receipt.status === 'success') {
-      repos.claims.update(claim.id, { status: 'CONFIRMED', gasCost });
+      await repos.claims.update(claim.id, { status: 'CONFIRMED', gasCost });
       for (const t of trades)
-        repos.trades.patch(t.id, { claimStatus: 'CLAIMED' }, `claimed in block ${receipt.blockNumber}`);
+        await repos.trades.patch(t.id, { claimStatus: 'CLAIMED' }, `claimed in block ${receipt.blockNumber}`);
       const total = trades.reduce((a, t) => a + (t.payout ?? 0n), 0n);
-      this.ctx.audit.record({
+      await this.ctx.audit.record({
         component: 'claims',
         severity: 'INFO',
         type: AuditType.PAYOUT_CLAIMED,
@@ -123,40 +130,49 @@ export class ClaimService {
       this.ctx.bus.emit('trade', { claimId: claim.id });
       return true;
     }
-    repos.claims.update(claim.id, { status: 'FAILED', gasCost, error: 'claim reverted on-chain' });
-    this.revert(claim.id, trades, 'claim reverted on-chain', false);
+    await repos.claims.update(claim.id, { status: 'FAILED', gasCost, error: 'claim reverted on-chain' });
+    await this.revert(claim.id, trades, 'claim reverted on-chain', false);
     return false;
   }
 
+  private async tradesOf(claim: Claim): Promise<Trade[]> {
+    const out: Trade[] = [];
+    for (const e of claim.epochs) {
+      const t = await this.ctx.repos.trades.findLive(claim.walletId, claim.marketId, e);
+      if (t && t.claimId === claim.id) out.push(t);
+    }
+    return out;
+  }
+
   /** Splits claim gas across trades (remainder to the first) and refreshes their net P&L. */
-  private attributeGas(trades: Trade[], gasCost: bigint): void {
+  private async attributeGas(trades: Trade[], gasCost: bigint): Promise<void> {
     if (trades.length === 0) return;
     const share = gasCost / BigInt(trades.length);
     const remainder = gasCost - share * BigInt(trades.length);
-    trades.forEach((t, i) => {
+    for (const [i, t] of trades.entries()) {
       const claimGasCost = (t.claimGasCost ?? 0n) + share + (i === 0 ? remainder : 0n);
       const netPnl = tradeNetPnl({ ...t, claimGasCost });
-      this.ctx.repos.trades.patch(
+      await this.ctx.repos.trades.patch(
         t.id,
         { claimGasCost, netPnl },
         `claim gas share ${weiToBnbString(claimGasCost)} BNB`,
       );
-    });
+    }
   }
 
-  private revert(claimId: number, trades: Trade[], reason: string, updateClaim = true): void {
-    if (updateClaim) this.ctx.repos.claims.update(claimId, { status: 'FAILED', error: reason });
+  private async revert(claimId: number, trades: Trade[], reason: string, updateClaim = true): Promise<void> {
+    if (updateClaim) await this.ctx.repos.claims.update(claimId, { status: 'FAILED', error: reason });
     for (const t of trades)
-      this.ctx.repos.trades.patch(
+      await this.ctx.repos.trades.patch(
         t.id,
         { claimStatus: 'UNCLAIMED', claimId: null },
         `claim failed: ${reason}`,
       );
-    this.auditFailure(this.ctx.repos.claims.get(claimId)!, reason);
+    await this.auditFailure((await this.ctx.repos.claims.get(claimId))!, reason);
   }
 
-  private auditFailure(claim: Claim, reason: string): void {
-    this.ctx.audit.record({
+  private async auditFailure(claim: Claim, reason: string): Promise<void> {
+    await this.ctx.audit.record({
       component: 'claims',
       severity: 'ERROR',
       type: AuditType.CLAIM_FAILED,
@@ -169,19 +185,20 @@ export class ClaimService {
   /** Called by the reconciler for claims left SUBMITTED. */
   async reconcileOpen(): Promise<void> {
     const { repos, reader } = this.ctx;
-    for (const c of repos.claims.open()) {
+    for (const c of await repos.claims.open()) {
       if (!c.txHash) {
         if (Date.parse(c.createdAt) < this.ctx.clock.nowMs() - 10 * 60_000)
-          repos.claims.update(c.id, { status: 'FAILED', error: 'never submitted' });
+          await repos.claims.update(c.id, { status: 'FAILED', error: 'never submitted' });
         continue;
       }
       const receipt = await reader.getReceipt(c.txHash as `0x${string}`);
-      if (receipt) this.applyReceipt(c, receipt);
+      if (receipt) await this.applyReceipt(c, receipt);
       else if (Date.parse(c.updatedAt) < this.ctx.clock.nowMs() - 10 * 60_000) {
-        const trades = c.epochs
-          .map((e) => repos.trades.findLive(c.walletId, c.marketId, e))
-          .filter((t): t is Trade => t !== undefined && t.claimId === c.id);
-        this.revert(c.id, trades, 'claim transaction dropped (no receipt after 10 minutes)');
+        await this.revert(
+          c.id,
+          await this.tradesOf(c),
+          'claim transaction dropped (no receipt after 10 minutes)',
+        );
       }
     }
   }

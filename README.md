@@ -32,7 +32,9 @@ in the dashboard with a typed confirmation, and the individual strategy opts in.
 
 ## Quick start (local)
 
-Requirements: Node.js ≥ 22.13 (Node 24 recommended; uses the built-in `node:sqlite`).
+Requirements: Node.js ≥ 22.13 (Node 24 recommended). The database is PostgreSQL: by default an embedded PGlite
+directory (`data/pg`, nothing to install); set `DATABASE_URL=postgres://…` for a server or Supabase
+(see [docs/OPERATIONS.md](docs/OPERATIONS.md#database)).
 
 ```bash
 npm ci
@@ -49,8 +51,8 @@ Development (hot reload): `npm run dev:server` and `npm run dev:web` (dashboard 
 ### Docker
 
 ```bash
-cp .env.example .env            # set ADMIN_API_TOKEN
-docker compose up --build       # dashboard on http://127.0.0.1:8080 ; data in ./data, logs in ./logs
+cp .env.example .env            # set ADMIN_API_TOKEN and POSTGRES_PASSWORD
+docker compose up --build       # dashboard on http://127.0.0.1:8080 ; Postgres data in ./data/postgres, logs in ./logs
 ```
 
 ## Paper trading
@@ -77,6 +79,7 @@ Arming is cleared on every restart unless `BOT_AUTO_RESUME_LIVE=true`. **Emergen
 
 ```bash
 npm run app -- migrate                       # schema + seed markets/strategies/wallet
+npm run app -- import-sqlite <file>          # one-time move of a pre-Postgres data/bsc-predict.db
 npm run app -- import-history [--format v2|v1|prdt] [--file path | --url url] [--all]
 npm run app -- sync-history [--from epoch]   # initial / catch-up sync from chain
 npm run app -- sync-current                  # incremental sync

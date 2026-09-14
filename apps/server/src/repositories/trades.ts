@@ -202,48 +202,33 @@ export interface TradeFilter {
 function whereFor(f: TradeFilter): { clause: string; params: Record<string, string | number> } {
   const w: string[] = [];
   const p: Record<string, string | number> = {};
-  const eq = (col: string, key: string, v: string | number | undefined) => {
-    if (v !== undefined) {
-      w.push(`${col} = :${key}`);
-      p[key] = v;
-    }
-  };
-  eq('mode', 'mode', f.mode);
-  eq('source', 'source', f.source);
-  eq('strategy_id', 'strategyId', f.strategyId);
-  eq('market_id', 'marketId', f.marketId);
-  eq('wallet_id', 'walletId', f.walletId);
-  eq('direction', 'direction', f.direction);
-  eq('status', 'status', f.status);
-  eq('result', 'result', f.result);
-  eq('epoch', 'epoch', f.epoch);
-  const cmp = (sql: string, key: string, v: number | undefined) => {
+  const add = (sql: string, key: string, v: string | number | undefined) => {
     if (v === undefined) return;
     w.push(sql);
     p[key] = v;
   };
-  cmp('placed_at >= :fromTime', 'fromTime', f.fromTime);
-  cmp('placed_at <= :toTime', 'toTime', f.toTime);
-  // Amount filters are display filters; exact accounting never relies on them.
-  cmp(
-    'CAST(amount AS REAL) >= :minAmount',
-    'minAmount',
-    f.minAmountWei === undefined ? undefined : Number(f.minAmountWei),
-  );
-  cmp(
-    'CAST(amount AS REAL) <= :maxAmount',
-    'maxAmount',
-    f.maxAmountWei === undefined ? undefined : Number(f.maxAmountWei),
-  );
+  add('mode = :mode', 'mode', f.mode);
+  add('source = :source', 'source', f.source);
+  add('strategy_id = :strategyId', 'strategyId', f.strategyId);
+  add('market_id = :marketId', 'marketId', f.marketId);
+  add('wallet_id = :walletId', 'walletId', f.walletId);
+  add('direction = :direction', 'direction', f.direction);
+  add('status = :status', 'status', f.status);
+  add('result = :result', 'result', f.result);
+  add('epoch = :epoch', 'epoch', f.epoch);
+  add('placed_at >= :fromTime', 'fromTime', f.fromTime);
+  add('placed_at <= :toTime', 'toTime', f.toTime);
+  add('amount >= :minAmount', 'minAmount', f.minAmountWei?.toString());
+  add('amount <= :maxAmount', 'maxAmount', f.maxAmountWei?.toString());
   return { clause: w.length > 0 ? `WHERE ${w.join(' AND ')}` : '', params: p };
 }
 
 export class TradesRepo {
   constructor(private readonly db: Db) {}
 
-  insert(t: NewTrade, detail: string): Trade {
-    return this.db.tx(() => {
-      const id = this.db.run(
+  async insert(t: NewTrade, detail: string): Promise<Trade> {
+    return this.db.tx(async () => {
+      const id = await this.db.insert(
         `INSERT INTO trades (uid, mode, source, wallet_id, market_id, round_id, epoch, strategy_id, decision_id, direction,
            amount, entry_bull_payout, entry_bear_payout, placed_at, status, gas_cost, claim_status)
          VALUES (:uid, :mode, :source, :walletId, :marketId, :roundId, :epoch, :strategyId, :decisionId, :direction,
@@ -267,55 +252,61 @@ export class TradesRepo {
           gasCost: bigStr(t.gasCost ?? null),
           claimStatus: t.claimStatus ?? 'NOT_APPLICABLE',
         },
-      ).lastInsertRowid;
-      this.event(id, null, t.status, detail);
-      return this.get(id)!;
+      );
+      await this.event(id, null, t.status, detail);
+      return (await this.get(id))!;
     });
   }
 
-  get(id: number): Trade | undefined {
-    const r = this.db.get<Row>('SELECT * FROM trades WHERE id = ?', [id]);
+  async get(id: number): Promise<Trade | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM trades WHERE id = ?', [id]);
     return r ? map(r) : undefined;
   }
 
-  byUid(uid: string): Trade | undefined {
-    const r = this.db.get<Row>('SELECT * FROM trades WHERE uid = ?', [uid]);
+  async byUid(uid: string): Promise<Trade | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM trades WHERE uid = ?', [uid]);
     return r ? map(r) : undefined;
   }
 
-  byTxHash(hash: string): Trade | undefined {
-    const r = this.db.get<Row>('SELECT * FROM trades WHERE tx_hash = ?', [hash]);
+  async byTxHash(hash: string): Promise<Trade | undefined> {
+    const r = await this.db.get<Row>('SELECT * FROM trades WHERE tx_hash = ?', [hash]);
     return r ? map(r) : undefined;
   }
 
   /** Guarded status change: validates the transition and fails if another writer changed the trade first. */
-  transition(id: number, from: TradeStatus, to: TradeStatus, patch: TradePatch, detail: string): Trade {
+  async transition(
+    id: number,
+    from: TradeStatus,
+    to: TradeStatus,
+    patch: TradePatch,
+    detail: string,
+  ): Promise<Trade> {
     assertTransition(from, to);
-    return this.db.tx(() => {
+    return this.db.tx(async () => {
       const { sets, params } = this.patchSql(patch);
-      const res = this.db.run(
+      const res = await this.db.run(
         `UPDATE trades SET status = :to, ${sets.length > 0 ? `${sets.join(', ')}, ` : ''}updated_at = :now
          WHERE id = :id AND status = :from`,
         { ...params, to, from, id, now: nowIso() },
       );
       if (res.changes !== 1) throw new ConcurrentModificationError(id, from);
-      this.event(id, from, to, detail);
-      return this.get(id)!;
+      await this.event(id, from, to, detail);
+      return (await this.get(id))!;
     });
   }
 
   /** Updates non-status fields (e.g. claim bookkeeping); recorded in trade_events. */
-  patch(id: number, patch: TradePatch, detail: string): Trade {
-    return this.db.tx(() => {
+  async patch(id: number, patch: TradePatch, detail: string): Promise<Trade> {
+    return this.db.tx(async () => {
       const { sets, params } = this.patchSql(patch);
-      if (sets.length === 0) return this.get(id)!;
-      this.db.run(`UPDATE trades SET ${sets.join(', ')}, updated_at = :now WHERE id = :id`, {
+      if (sets.length === 0) return (await this.get(id))!;
+      await this.db.run(`UPDATE trades SET ${sets.join(', ')}, updated_at = :now WHERE id = :id`, {
         ...params,
         id,
         now: nowIso(),
       });
-      const t = this.get(id)!;
-      this.event(id, t.status, t.status, detail);
+      const t = (await this.get(id))!;
+      await this.event(id, t.status, t.status, detail);
       return t;
     });
   }
@@ -331,88 +322,93 @@ export class TradesRepo {
     return { sets, params };
   }
 
-  private event(tradeId: number, from: TradeStatus | null, to: TradeStatus, detail: string): void {
-    this.db.run(
+  private async event(
+    tradeId: number,
+    from: TradeStatus | null,
+    to: TradeStatus,
+    detail: string,
+  ): Promise<void> {
+    await this.db.run(
       'INSERT INTO trade_events (trade_id, from_status, to_status, at, detail) VALUES (?, ?, ?, ?, ?)',
       [tradeId, from, to, Date.now(), detail],
     );
   }
 
-  events(
+  async events(
     tradeId: number,
-  ): { fromStatus: TradeStatus | null; toStatus: TradeStatus; at: number; detail: string | null }[] {
-    return this.db
-      .all<{ from_status: TradeStatus | null; to_status: TradeStatus; at: number; detail: string | null }>(
-        'SELECT * FROM trade_events WHERE trade_id = ? ORDER BY id',
-        [tradeId],
-      )
-      .map((r) => ({ fromStatus: r.from_status, toStatus: r.to_status, at: r.at, detail: r.detail }));
+  ): Promise<{ fromStatus: TradeStatus | null; toStatus: TradeStatus; at: number; detail: string | null }[]> {
+    return (
+      await this.db.all<{
+        from_status: TradeStatus | null;
+        to_status: TradeStatus;
+        at: number;
+        detail: string | null;
+      }>('SELECT * FROM trade_events WHERE trade_id = ? ORDER BY id', [tradeId])
+    ).map((r) => ({ fromStatus: r.from_status, toStatus: r.to_status, at: r.at, detail: r.detail }));
   }
 
-  list(
+  async list(
     f: TradeFilter,
     page: { limit: number; offset: number; order: 'asc' | 'desc' },
-  ): { rows: Trade[]; total: number } {
+  ): Promise<{ rows: Trade[]; total: number }> {
     const { clause, params } = whereFor(f);
-    const total = this.db.get<{ n: number }>(`SELECT count(*) AS n FROM trades ${clause}`, params)!.n;
-    const rows = this.db
-      .all<Row>(
+    const total = (await this.db.get<{ n: number }>(`SELECT count(*) AS n FROM trades ${clause}`, params))!.n;
+    const rows = (
+      await this.db.all<Row>(
         `SELECT * FROM trades ${clause} ORDER BY placed_at ${page.order === 'asc' ? 'ASC' : 'DESC'}, id DESC LIMIT :limit OFFSET :offset`,
-        {
-          ...params,
-          limit: page.limit,
-          offset: page.offset,
-        },
+        { ...params, limit: page.limit, offset: page.offset },
       )
-      .map(map);
+    ).map(map);
     return { rows, total };
   }
 
   /** All matching trades (for analytics). */
-  all(f: TradeFilter): Trade[] {
+  async all(f: TradeFilter): Promise<Trade[]> {
     const { clause, params } = whereFor(f);
-    return this.db.all<Row>(`SELECT * FROM trades ${clause} ORDER BY placed_at, id`, params).map(map);
+    return (await this.db.all<Row>(`SELECT * FROM trades ${clause} ORDER BY placed_at, id`, params)).map(map);
   }
 
-  byStatus(statuses: readonly TradeStatus[], mode?: TradeMode): Trade[] {
+  async byStatus(statuses: readonly TradeStatus[], mode?: TradeMode): Promise<Trade[]> {
     const placeholders = statuses.map(() => '?').join(',');
-    const rows = this.db.all<Row>(
+    const rows = await this.db.all<Row>(
       `SELECT * FROM trades WHERE status IN (${placeholders}) ${mode ? 'AND mode = ?' : ''} ORDER BY id`,
       mode ? [...statuses, mode] : [...statuses],
     );
     return rows.map(map);
   }
 
-  forRound(roundId: number): Trade[] {
-    return this.db.all<Row>('SELECT * FROM trades WHERE round_id = ? ORDER BY id', [roundId]).map(map);
+  async forRound(roundId: number): Promise<Trade[]> {
+    return (await this.db.all<Row>('SELECT * FROM trades WHERE round_id = ? ORDER BY id', [roundId])).map(
+      map,
+    );
   }
 
   /** Confirmed trades whose round has become final — ready to settle. */
-  settleable(): Trade[] {
-    return this.db
-      .all<Row>(
+  async settleable(): Promise<Trade[]> {
+    return (
+      await this.db.all<Row>(
         `SELECT t.* FROM trades t JOIN rounds r ON r.id = t.round_id
          WHERE t.status = 'CONFIRMED' AND r.is_final = 1 ORDER BY t.id`,
       )
-      .map(map);
+    ).map(map);
   }
 
-  findLive(walletId: number, marketId: number, epoch: number): Trade | undefined {
-    const r = this.db.get<Row>(
+  async findLive(walletId: number, marketId: number, epoch: number): Promise<Trade | undefined> {
+    const r = await this.db.get<Row>(
       `SELECT * FROM trades WHERE mode = 'LIVE' AND wallet_id = ? AND market_id = ? AND epoch = ? AND status <> 'FAILED'`,
       [walletId, marketId, epoch],
     );
     return r ? map(r) : undefined;
   }
 
-  unclaimed(walletId: number, marketId: number): Trade[] {
-    return this.db
-      .all<Row>(
+  async unclaimed(walletId: number, marketId: number): Promise<Trade[]> {
+    return (
+      await this.db.all<Row>(
         `SELECT * FROM trades WHERE mode = 'LIVE' AND wallet_id = ? AND market_id = ? AND status = 'SETTLED'
            AND claim_status = 'UNCLAIMED' ORDER BY epoch`,
         [walletId, marketId],
       )
-      .map(map);
+    ).map(map);
   }
 
   /**
@@ -420,14 +416,19 @@ export class TradesRepo {
    * sequence-recovery strategy re-derives its ladder position from after a restart (see core `ownTrades`).
    * FAILED trades are excluded: the contract never recorded them, so they carry no directional history.
    */
-  recentForStrategy(strategyId: number, mode: TradeMode, beforeEpoch: number, limit: number): Trade[] {
-    return this.db
-      .all<Row>(
+  async recentForStrategy(
+    strategyId: number,
+    mode: TradeMode,
+    beforeEpoch: number,
+    limit: number,
+  ): Promise<Trade[]> {
+    return (
+      await this.db.all<Row>(
         `SELECT * FROM trades WHERE strategy_id = ? AND mode = ? AND epoch < ? AND status <> 'FAILED'
            ORDER BY epoch DESC LIMIT ?`,
         [strategyId, mode, beforeEpoch, limit],
       )
-      .map(map);
+    ).map(map);
   }
 }
 
@@ -444,51 +445,53 @@ export interface Claim {
   updatedAt: string;
 }
 
+interface ClaimRow {
+  id: number;
+  wallet_id: number;
+  market_id: number;
+  epochs: string;
+  tx_hash: string | null;
+  status: Claim['status'];
+  gas_cost: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const mapClaim = (r: ClaimRow): Claim => ({
+  id: r.id,
+  walletId: r.wallet_id,
+  marketId: r.market_id,
+  epochs: parseJson<number[]>(r.epochs, []),
+  txHash: r.tx_hash,
+  status: r.status,
+  gasCost: big(r.gas_cost),
+  error: r.error,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
+
 export class ClaimsRepo {
   constructor(private readonly db: Db) {}
 
-  private map = (r: {
-    id: number;
-    wallet_id: number;
-    market_id: number;
-    epochs: string;
-    tx_hash: string | null;
-    status: Claim['status'];
-    gas_cost: string | null;
-    error: string | null;
-    created_at: string;
-    updated_at: string;
-  }): Claim => ({
-    id: r.id,
-    walletId: r.wallet_id,
-    marketId: r.market_id,
-    epochs: parseJson<number[]>(r.epochs, []),
-    txHash: r.tx_hash,
-    status: r.status,
-    gasCost: big(r.gas_cost),
-    error: r.error,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  });
-
-  insert(c: { walletId: number; marketId: number; epochs: number[] }): Claim {
-    const id = this.db.run(
+  async insert(c: { walletId: number; marketId: number; epochs: number[] }): Promise<Claim> {
+    const id = await this.db.insert(
       "INSERT INTO claims (wallet_id, market_id, epochs, status) VALUES (?, ?, ?, 'PENDING')",
       [c.walletId, c.marketId, stringify(c.epochs)],
-    ).lastInsertRowid;
-    return this.get(id)!;
+    );
+    return (await this.get(id))!;
   }
 
-  get(id: number): Claim | undefined {
-    const r = this.db.get<Parameters<ClaimsRepo['map']>[0]>('SELECT * FROM claims WHERE id = ?', [id]);
-    return r ? this.map(r) : undefined;
+  async get(id: number): Promise<Claim | undefined> {
+    const r = await this.db.get<ClaimRow>('SELECT * FROM claims WHERE id = ?', [id]);
+    return r ? mapClaim(r) : undefined;
   }
 
-  update(
+  async update(
     id: number,
     p: { txHash?: string; status?: Claim['status']; gasCost?: bigint | null; error?: string | null },
-  ): Claim {
-    this.db.run(
+  ): Promise<Claim> {
+    await this.db.run(
       `UPDATE claims SET tx_hash = COALESCE(:txHash, tx_hash), status = COALESCE(:status, status),
          gas_cost = COALESCE(:gasCost, gas_cost), error = COALESCE(:error, error), updated_at = :now WHERE id = :id`,
       {
@@ -500,20 +503,18 @@ export class ClaimsRepo {
         now: nowIso(),
       },
     );
-    return this.get(id)!;
+    return (await this.get(id))!;
   }
 
-  open(): Claim[] {
-    return this.db
-      .all<Parameters<ClaimsRepo['map']>[0]>(
-        "SELECT * FROM claims WHERE status IN ('PENDING','SUBMITTED') ORDER BY id",
-      )
-      .map(this.map);
+  async open(): Promise<Claim[]> {
+    return (
+      await this.db.all<ClaimRow>("SELECT * FROM claims WHERE status IN ('PENDING','SUBMITTED') ORDER BY id")
+    ).map(mapClaim);
   }
 
-  list(limit = 100): Claim[] {
-    return this.db
-      .all<Parameters<ClaimsRepo['map']>[0]>('SELECT * FROM claims ORDER BY id DESC LIMIT ?', [limit])
-      .map(this.map);
+  async list(limit = 100): Promise<Claim[]> {
+    return (await this.db.all<ClaimRow>('SELECT * FROM claims ORDER BY id DESC LIMIT ?', [limit])).map(
+      mapClaim,
+    );
   }
 }

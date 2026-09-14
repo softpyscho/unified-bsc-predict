@@ -32,13 +32,13 @@ export class WalletSyncService {
 
   async syncAll(): Promise<WalletSyncResult[]> {
     const out: WalletSyncResult[] = [];
-    for (const w of this.ctx.repos.wallets.list()) if (w.enabled) out.push(await this.syncWallet(w.id));
+    for (const w of await this.ctx.repos.wallets.list()) if (w.enabled) out.push(await this.syncWallet(w.id));
     return out;
   }
 
   async syncWallet(walletId: number): Promise<WalletSyncResult> {
     const { repos, reader } = this.ctx;
-    const wallet = repos.wallets.get(walletId);
+    const wallet = await repos.wallets.get(walletId);
     if (!wallet) throw new Error(`wallet ${walletId} not found`);
     const market = this.markets.tradable();
     const address = wallet.address as `0x${string}`;
@@ -56,25 +56,26 @@ export class WalletSyncService {
     while (res.cursor < total) {
       const page = await reader.getUserRounds(address, res.cursor, PAGE);
       if (page.rounds.length === 0) break;
-      const missing = page.rounds.map((r) => r.epoch).filter((e) => !repos.rounds.get(market.id, e));
+      const missing: number[] = [];
+      for (const r of page.rounds) if (!(await repos.rounds.get(market.id, r.epoch))) missing.push(r.epoch);
       if (missing.length > 0) await this.history.syncEpochs(missing);
 
       let processed = 0;
       for (const ur of page.rounds) {
-        const round = repos.rounds.get(market.id, ur.epoch);
+        const round = await repos.rounds.get(market.id, ur.epoch);
         if (!round) break; // retried on the next run
-        const existing = repos.trades.findLive(wallet.id, market.id, ur.epoch);
+        const existing = await repos.trades.findLive(wallet.id, market.id, ur.epoch);
         if (existing) {
           const pending =
             existing.status === 'PENDING' ||
             existing.status === 'SUBMITTING' ||
             existing.status === 'SUBMITTED';
           if (pending && !this.execution.isInflight(existing.id)) {
-            this.execution.confirmFromLedger(existing.id, 'bet found on-chain via getUserRounds');
+            await this.execution.confirmFromLedger(existing.id, 'bet found on-chain via getUserRounds');
             res.confirmed++;
           }
           if (ur.amount !== existing.amount) {
-            this.ctx.audit.record({
+            await this.ctx.audit.record({
               component: 'wallet-sync',
               severity: 'WARN',
               type: AuditType.TRADE_IMPORTED,
@@ -84,13 +85,13 @@ export class WalletSyncService {
             });
           }
           if (ur.claimed && (existing.claimStatus === 'UNCLAIMED' || existing.claimStatus === 'CLAIMING')) {
-            repos.trades.patch(existing.id, { claimStatus: 'CLAIMED' }, 'claimed on-chain');
+            await repos.trades.patch(existing.id, { claimStatus: 'CLAIMED' }, 'claimed on-chain');
             res.claimedDetected++;
           } else if (ur.claimed) {
             claimedOnChain.push(existing.id);
           }
         } else {
-          const t = repos.trades.insert(
+          const t = await repos.trades.insert(
             {
               uid: `live:w${wallet.id}:${market.id}:${ur.epoch}`,
               mode: 'LIVE',
@@ -117,20 +118,20 @@ export class WalletSyncService {
         processed++;
       }
       res.cursor += processed;
-      repos.wallets.setCursor(wallet.id, res.cursor);
+      await repos.wallets.setCursor(wallet.id, res.cursor);
       if (processed < page.rounds.length) break;
     }
 
-    this.settlement.settleAll();
+    await this.settlement.settleAll();
     for (const id of claimedOnChain) {
-      const t = repos.trades.get(id);
+      const t = await repos.trades.get(id);
       if (t && t.status === 'SETTLED' && t.claimStatus === 'UNCLAIMED') {
-        repos.trades.patch(id, { claimStatus: 'CLAIMED' }, 'claimed on-chain');
+        await repos.trades.patch(id, { claimStatus: 'CLAIMED' }, 'claimed on-chain');
         res.claimedDetected++;
       }
     }
     if (res.imported > 0 || res.confirmed > 0) {
-      this.ctx.audit.record({
+      await this.ctx.audit.record({
         component: 'wallet-sync',
         severity: 'INFO',
         type: AuditType.TRADE_IMPORTED,

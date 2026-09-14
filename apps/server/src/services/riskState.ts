@@ -52,8 +52,8 @@ export class RiskStateBuilder {
     const roundOpen = i.round.status === 'OPEN' && secondsToLock > 0;
 
     if (i.mode === 'PAPER') {
-      const trades = repos.trades.all({ mode: 'PAPER' });
-      const acct = this.portfolio.paperAccount();
+      const trades = await repos.trades.all({ mode: 'PAPER' });
+      const acct = await this.portfolio.paperAccount();
       const s = ledgerStats(trades, i.strategyId, dayStart);
       return {
         bankrollWei: acct.balance ?? 0n,
@@ -71,7 +71,7 @@ export class RiskStateBuilder {
       };
     }
 
-    const wallet = repos.wallets.signer();
+    const wallet = await repos.wallets.signer();
     if (!wallet || !this.ctx.writer) {
       return {
         bankrollWei: 0n,
@@ -96,8 +96,8 @@ export class RiskStateBuilder {
       reader.getLedger(i.round.epoch, address),
     ]);
     this.portfolio.setLiveBalance(balance);
-    const acct = this.portfolio.liveAccount(wallet.id);
-    const trades = repos.trades.all({ mode: 'LIVE', walletId: wallet.id });
+    const acct = await this.portfolio.liveAccount(wallet.id);
+    const trades = await repos.trades.all({ mode: 'LIVE', walletId: wallet.id });
     const s = ledgerStats(trades, i.strategyId, dayStart);
     return {
       bankrollWei: balance + acct.exposure + acct.claimable,
@@ -108,7 +108,8 @@ export class RiskStateBuilder {
       lossStreak: s.lossStreak,
       roundsSinceLastLoss: s.lastLossEpoch === null ? null : i.round.epoch - s.lastLossEpoch,
       alreadyBetThisRound:
-        repos.trades.findLive(wallet.id, i.marketId, i.round.epoch) !== undefined || ledger.amount > 0n,
+        (await repos.trades.findLive(wallet.id, i.marketId, i.round.epoch)) !== undefined ||
+        ledger.amount > 0n,
       roundOpen,
       secondsToLock,
       gasPriceWei: gasPrice,

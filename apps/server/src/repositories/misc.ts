@@ -57,23 +57,23 @@ const mapStrategy = (r: StrategyDbRow): StrategyRow => ({
 export class StrategiesRepo {
   constructor(private readonly db: Db) {}
 
-  list(): StrategyRow[] {
-    return this.db.all<StrategyDbRow>('SELECT * FROM strategies ORDER BY id').map(mapStrategy);
+  async list(): Promise<StrategyRow[]> {
+    return (await this.db.all<StrategyDbRow>('SELECT * FROM strategies ORDER BY id')).map(mapStrategy);
   }
 
-  get(id: number): StrategyRow | undefined {
-    const r = this.db.get<StrategyDbRow>('SELECT * FROM strategies WHERE id = ?', [id]);
+  async get(id: number): Promise<StrategyRow | undefined> {
+    const r = await this.db.get<StrategyDbRow>('SELECT * FROM strategies WHERE id = ?', [id]);
     return r ? mapStrategy(r) : undefined;
   }
 
-  bySlug(slug: string): StrategyRow | undefined {
-    const r = this.db.get<StrategyDbRow>('SELECT * FROM strategies WHERE slug = ?', [slug]);
+  async bySlug(slug: string): Promise<StrategyRow | undefined> {
+    const r = await this.db.get<StrategyDbRow>('SELECT * FROM strategies WHERE slug = ?', [slug]);
     return r ? mapStrategy(r) : undefined;
   }
 
   /** Seeds a strategy; existing rows (and their operator-edited config) are left untouched. */
-  insertIfMissing(s: Omit<StrategyRow, 'id' | 'createdAt' | 'updatedAt'>): StrategyRow {
-    this.db.run(
+  async insertIfMissing(s: Omit<StrategyRow, 'id' | 'createdAt' | 'updatedAt'>): Promise<StrategyRow> {
+    await this.db.run(
       `INSERT INTO strategies (slug, plugin, name, version, description, market_id, config, enabled,
          paper_trading_enabled, live_trading_enabled)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET version = excluded.version,
@@ -91,24 +91,24 @@ export class StrategiesRepo {
         bool(s.liveTradingEnabled),
       ],
     );
-    return this.bySlug(s.slug)!;
+    return (await this.bySlug(s.slug))!;
   }
 
-  updateConfig(id: number, config: StrategyConfig): StrategyRow {
-    this.db.run('UPDATE strategies SET config = ?, updated_at = ? WHERE id = ?', [
+  async updateConfig(id: number, config: StrategyConfig): Promise<StrategyRow> {
+    await this.db.run('UPDATE strategies SET config = ?, updated_at = ? WHERE id = ?', [
       stringify(config),
       nowIso(),
       id,
     ]);
-    return this.get(id)!;
+    return (await this.get(id))!;
   }
 
-  setFlags(
+  async setFlags(
     id: number,
     f: { enabled?: boolean; paperTradingEnabled?: boolean; liveTradingEnabled?: boolean },
-  ): StrategyRow {
-    const cur = this.get(id)!;
-    this.db.run(
+  ): Promise<StrategyRow> {
+    const cur = (await this.get(id))!;
+    await this.db.run(
       'UPDATE strategies SET enabled = ?, paper_trading_enabled = ?, live_trading_enabled = ?, updated_at = ? WHERE id = ?',
       [
         bool(f.enabled ?? cur.enabled),
@@ -118,7 +118,7 @@ export class StrategiesRepo {
         id,
       ],
     );
-    return this.get(id)!;
+    return (await this.get(id))!;
   }
 }
 
@@ -160,50 +160,54 @@ const mapWallet = (r: WalletDbRow): WalletRow => ({
 export class WalletsRepo {
   constructor(private readonly db: Db) {}
 
-  list(): WalletRow[] {
-    return this.db.all<WalletDbRow>('SELECT * FROM wallets ORDER BY kind DESC, id').map(mapWallet);
+  async list(): Promise<WalletRow[]> {
+    return (await this.db.all<WalletDbRow>('SELECT * FROM wallets ORDER BY kind DESC, id')).map(mapWallet);
   }
 
-  get(id: number): WalletRow | undefined {
-    const r = this.db.get<WalletDbRow>('SELECT * FROM wallets WHERE id = ?', [id]);
+  async get(id: number): Promise<WalletRow | undefined> {
+    const r = await this.db.get<WalletDbRow>('SELECT * FROM wallets WHERE id = ?', [id]);
     return r ? mapWallet(r) : undefined;
   }
 
-  byAddress(address: string): WalletRow | undefined {
-    const r = this.db.get<WalletDbRow>('SELECT * FROM wallets WHERE lower(address) = lower(?)', [address]);
+  async byAddress(address: string): Promise<WalletRow | undefined> {
+    const r = await this.db.get<WalletDbRow>('SELECT * FROM wallets WHERE lower(address) = lower(?)', [
+      address,
+    ]);
     return r ? mapWallet(r) : undefined;
   }
 
-  signer(): WalletRow | undefined {
-    const r = this.db.get<WalletDbRow>(
+  async signer(): Promise<WalletRow | undefined> {
+    const r = await this.db.get<WalletDbRow>(
       "SELECT * FROM wallets WHERE kind = 'SIGNER' AND enabled = 1 ORDER BY id DESC LIMIT 1",
     );
     return r ? mapWallet(r) : undefined;
   }
 
-  upsert(address: string, kind: 'SIGNER' | 'WATCH', label: string): WalletRow {
-    const existing = this.byAddress(address);
+  async upsert(address: string, kind: 'SIGNER' | 'WATCH', label: string): Promise<WalletRow> {
+    const existing = await this.byAddress(address);
     if (existing) {
-      this.db.run('UPDATE wallets SET kind = ?, label = ?, enabled = 1 WHERE id = ?', [
+      await this.db.run('UPDATE wallets SET kind = ?, label = ?, enabled = 1 WHERE id = ?', [
         kind,
         label,
         existing.id,
       ]);
       if (kind === 'SIGNER')
-        this.db.run("UPDATE wallets SET kind = 'WATCH' WHERE kind = 'SIGNER' AND id <> ?", [existing.id]);
-      return this.get(existing.id)!;
+        await this.db.run("UPDATE wallets SET kind = 'WATCH' WHERE kind = 'SIGNER' AND id <> ?", [
+          existing.id,
+        ]);
+      return (await this.get(existing.id))!;
     }
-    if (kind === 'SIGNER') this.db.run("UPDATE wallets SET kind = 'WATCH' WHERE kind = 'SIGNER'");
-    const id = this.db.run('INSERT INTO wallets (address, label, kind) VALUES (?, ?, ?)', [
+    if (kind === 'SIGNER') await this.db.run("UPDATE wallets SET kind = 'WATCH' WHERE kind = 'SIGNER'");
+    const id = await this.db.insert('INSERT INTO wallets (address, label, kind) VALUES (?, ?, ?)', [
       address,
       label,
       kind,
-    ]).lastInsertRowid;
-    return this.get(id)!;
+    ]);
+    return (await this.get(id))!;
   }
 
-  setCursor(id: number, cursor: number): void {
-    this.db.run('UPDATE wallets SET user_rounds_cursor = ?, last_synced_at = ? WHERE id = ?', [
+  async setCursor(id: number, cursor: number): Promise<void> {
+    await this.db.run('UPDATE wallets SET user_rounds_cursor = ?, last_synced_at = ? WHERE id = ?', [
       cursor,
       nowIso(),
       id,
@@ -267,10 +271,10 @@ const mapAudit = (r: AuditDbRow): AuditEvent => ({
 export class AuditRepo {
   constructor(private readonly db: Db) {}
 
-  append(e: AuditInput): AuditEvent {
-    const id = this.db.run(
+  async append(e: AuditInput): Promise<AuditEvent> {
+    const row = await this.db.get<AuditDbRow>(
       `INSERT INTO audit_events (ts, component, severity, type, market_id, epoch, strategy_id, trade_id, tx_hash, message, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       [
         Date.now(),
         e.component,
@@ -284,11 +288,11 @@ export class AuditRepo {
         e.message,
         e.metadata ? stringify(e.metadata) : null,
       ],
-    ).lastInsertRowid;
-    return mapAudit(this.db.get<AuditDbRow>('SELECT * FROM audit_events WHERE id = ?', [id])!);
+    );
+    return mapAudit(row!);
   }
 
-  list(
+  async list(
     f: {
       type?: string;
       severity?: Severity;
@@ -299,7 +303,7 @@ export class AuditRepo {
       beforeId?: number;
     },
     limit: number,
-  ): AuditEvent[] {
+  ): Promise<AuditEvent[]> {
     const w: string[] = [];
     const p: Record<string, string | number> = { limit };
     const add = (sql: string, key: string, v: string | number | undefined) => {
@@ -315,9 +319,9 @@ export class AuditRepo {
     add('trade_id = :tradeId', 'tradeId', f.tradeId);
     add('id < :beforeId', 'beforeId', f.beforeId);
     const clause = w.length > 0 ? `WHERE ${w.join(' AND ')}` : '';
-    return this.db
-      .all<AuditDbRow>(`SELECT * FROM audit_events ${clause} ORDER BY id DESC LIMIT :limit`, p)
-      .map(mapAudit);
+    return (
+      await this.db.all<AuditDbRow>(`SELECT * FROM audit_events ${clause} ORDER BY id DESC LIMIT :limit`, p)
+    ).map(mapAudit);
   }
 }
 
@@ -337,15 +341,15 @@ export interface BotStateRow {
 export class BotStateRepo {
   constructor(private readonly db: Db) {}
 
-  get(): BotStateRow {
-    const r = this.db.get<{
+  async get(): Promise<BotStateRow> {
+    const r = (await this.db.get<{
       status: BotStatus;
       status_reason: string | null;
       live_armed: number;
       live_armed_at: string | null;
       consecutive_failures: number;
       updated_at: string;
-    }>('SELECT * FROM bot_state WHERE id = 1')!;
+    }>('SELECT * FROM bot_state WHERE id = 1'))!;
     return {
       status: r.status,
       statusReason: r.status_reason,
@@ -356,10 +360,10 @@ export class BotStateRepo {
     };
   }
 
-  update(p: Partial<Omit<BotStateRow, 'updatedAt'>>): BotStateRow {
-    const cur = this.get();
+  async update(p: Partial<Omit<BotStateRow, 'updatedAt'>>): Promise<BotStateRow> {
+    const cur = await this.get();
     const next = { ...cur, ...p };
-    this.db.run(
+    await this.db.run(
       `UPDATE bot_state SET status = ?, status_reason = ?, live_armed = ?, live_armed_at = ?, consecutive_failures = ?,
          updated_at = ? WHERE id = 1`,
       [
@@ -397,8 +401,8 @@ export interface SnapshotRow {
 export class SnapshotsRepo {
   constructor(private readonly db: Db) {}
 
-  insert(s: Omit<SnapshotRow, 'id'>): void {
-    this.db.run(
+  async insert(s: Omit<SnapshotRow, 'id'>): Promise<void> {
+    await this.db.run(
       `INSERT INTO portfolio_snapshots (mode, wallet_id, taken_at, balance, available, deployed, claimable, realized_pnl,
          drawdown, roi, win_rate, loss_rate, trades) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -419,9 +423,9 @@ export class SnapshotsRepo {
     );
   }
 
-  list(mode: TradeMode, since: number, limit = 5000): SnapshotRow[] {
-    return this.db
-      .all<{
+  async list(mode: TradeMode, since: number, limit = 5000): Promise<SnapshotRow[]> {
+    return (
+      await this.db.all<{
         id: number;
         mode: TradeMode;
         wallet_id: number | null;
@@ -440,6 +444,7 @@ export class SnapshotsRepo {
         'SELECT * FROM portfolio_snapshots WHERE mode = ? AND taken_at >= ? ORDER BY taken_at DESC LIMIT ?',
         [mode, since, limit],
       )
+    )
       .reverse()
       .map((r) => ({
         id: r.id,
@@ -477,31 +482,31 @@ export interface BacktestRunRow {
 export class BacktestsRepo {
   constructor(private readonly db: Db) {}
 
-  create(request: unknown): number {
-    return this.db.run("INSERT INTO backtest_runs (status, request, heartbeat_at) VALUES ('RUNNING', ?, ?)", [
-      stringify(request),
-      Date.now(),
-    ]).lastInsertRowid;
+  async create(request: unknown): Promise<number> {
+    return this.db.insert(
+      "INSERT INTO backtest_runs (status, request, heartbeat_at) VALUES ('RUNNING', ?, ?)",
+      [stringify(request), Date.now()],
+    );
   }
 
   /** Also a heartbeat: another process may only treat a run as dead once its heartbeat is stale. */
-  progress(id: number, progress: number): void {
-    this.db.run('UPDATE backtest_runs SET progress = ?, heartbeat_at = ? WHERE id = ?', [
+  async progress(id: number, progress: number): Promise<void> {
+    await this.db.run('UPDATE backtest_runs SET progress = ?, heartbeat_at = ? WHERE id = ?', [
       progress,
       Date.now(),
       id,
     ]);
   }
 
-  finish(id: number, result: unknown, durationMs: number): void {
-    this.db.run(
+  async finish(id: number, result: unknown, durationMs: number): Promise<void> {
+    await this.db.run(
       "UPDATE backtest_runs SET status = 'DONE', result = ?, progress = 1, duration_ms = ?, finished_at = ? WHERE id = ?",
       [stringify(result), durationMs, nowIso(), id],
     );
   }
 
-  fail(id: number, error: string): void {
-    this.db.run("UPDATE backtest_runs SET status = 'FAILED', error = ?, finished_at = ? WHERE id = ?", [
+  async fail(id: number, error: string): Promise<void> {
+    await this.db.run("UPDATE backtest_runs SET status = 'FAILED', error = ?, finished_at = ? WHERE id = ?", [
       error,
       nowIso(),
       id,
@@ -509,17 +514,19 @@ export class BacktestsRepo {
   }
 
   /** Marks runs left RUNNING by a crashed process as failed. */
-  failInterrupted(staleMs = 60_000): number {
+  async failInterrupted(staleMs = 60_000): Promise<number> {
     // Runs owned by another live process (e.g. the CLI) keep heartbeating and are left alone.
-    return this.db.run(
-      `UPDATE backtest_runs SET status = 'FAILED', error = 'interrupted: runner stopped (process exit or crash)',
-         finished_at = ? WHERE status = 'RUNNING' AND coalesce(heartbeat_at, 0) < ?`,
-      [nowIso(), Date.now() - staleMs],
+    return (
+      await this.db.run(
+        `UPDATE backtest_runs SET status = 'FAILED', error = 'interrupted: runner stopped (process exit or crash)',
+           finished_at = ? WHERE status = 'RUNNING' AND coalesce(heartbeat_at, 0) < ?`,
+        [nowIso(), Date.now() - staleMs],
+      )
     ).changes;
   }
 
-  get(id: number, withResult = true): BacktestRunRow | undefined {
-    const r = this.db.get<{
+  async get(id: number, withResult = true): Promise<BacktestRunRow | undefined> {
+    const r = await this.db.get<{
       id: number;
       status: BacktestRunRow['status'];
       request: string;
@@ -547,10 +554,11 @@ export class BacktestsRepo {
     };
   }
 
-  list(limit = 50): BacktestRunRow[] {
-    return this.db
-      .all<{ id: number }>('SELECT id FROM backtest_runs ORDER BY id DESC LIMIT ?', [limit])
-      .map((r) => this.get(r.id, false)!);
+  async list(limit = 50): Promise<BacktestRunRow[]> {
+    const ids = await this.db.all<{ id: number }>('SELECT id FROM backtest_runs ORDER BY id DESC LIMIT ?', [
+      limit,
+    ]);
+    return Promise.all(ids.map(async (r) => (await this.get(r.id, false))!));
   }
 }
 
@@ -569,13 +577,13 @@ export interface ImportStats {
 export class SyncRepo {
   constructor(private readonly db: Db) {}
 
-  get(marketId: number): {
+  async get(marketId: number): Promise<{
     lastSyncedEpoch: number | null;
     lastSyncAt: string | null;
     lastReconcileAt: string | null;
     reconcileCursor: number | null;
-  } {
-    const r = this.db.get<{
+  }> {
+    const r = await this.db.get<{
       last_synced_epoch: number | null;
       last_sync_at: string | null;
       last_reconcile_at: string | null;
@@ -589,13 +597,15 @@ export class SyncRepo {
     };
   }
 
-  update(
+  async update(
     marketId: number,
     p: { lastSyncedEpoch?: number; synced?: boolean; reconciled?: boolean; reconcileCursor?: number },
-  ): void {
-    this.db.run('INSERT OR IGNORE INTO sync_state (market_id) VALUES (?)', [marketId]);
+  ): Promise<void> {
+    await this.db.run('INSERT INTO sync_state (market_id) VALUES (?) ON CONFLICT (market_id) DO NOTHING', [
+      marketId,
+    ]);
     const now = nowIso();
-    this.db.run(
+    await this.db.run(
       `UPDATE sync_state SET last_synced_epoch = COALESCE(:epoch, last_synced_epoch),
          last_sync_at = CASE WHEN :synced = 1 THEN :now ELSE last_sync_at END,
          last_reconcile_at = CASE WHEN :reconciled = 1 THEN :now ELSE last_reconcile_at END,
@@ -611,13 +621,12 @@ export class SyncRepo {
     );
   }
 
-  startImport(marketId: number, source: string): number {
-    return this.db.run('INSERT INTO import_runs (market_id, source) VALUES (?, ?)', [marketId, source])
-      .lastInsertRowid;
+  async startImport(marketId: number, source: string): Promise<number> {
+    return this.db.insert('INSERT INTO import_runs (market_id, source) VALUES (?, ?)', [marketId, source]);
   }
 
-  finishImport(id: number, s: ImportStats, report: unknown): void {
-    this.db.run(
+  async finishImport(id: number, s: ImportStats, report: unknown): Promise<void> {
+    await this.db.run(
       `UPDATE import_runs SET finished_at = ?, rows_read = ?, inserted = ?, unchanged = ?, duplicates_identical = ?,
          duplicates_conflicting = ?, malformed = ?, conflicts_with_db = ?, report = ? WHERE id = ?`,
       [
@@ -635,10 +644,11 @@ export class SyncRepo {
     );
   }
 
-  imports(limit = 20): unknown[] {
-    return this.db.all('SELECT * FROM import_runs ORDER BY id DESC LIMIT ?', [limit]).map((r) => {
-      const row = r as Record<string, unknown>;
-      return { ...row, report: parseJson(row.report as string | null, null) };
-    });
+  async imports(limit = 20): Promise<unknown[]> {
+    return (
+      await this.db.all<Record<string, unknown>>('SELECT * FROM import_runs ORDER BY id DESC LIMIT ?', [
+        limit,
+      ])
+    ).map((row) => ({ ...row, report: parseJson(row.report as string | null, null) }));
   }
 }

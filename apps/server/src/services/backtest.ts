@@ -61,6 +61,7 @@ function mergeConfig(base: StrategyConfig, override: Record<string, unknown> | u
 
 export class BacktestService {
   private active: number | null = null;
+  private starting = false;
   private runPromise: Promise<void> | null = null;
   private aborted = false;
 
@@ -80,22 +81,33 @@ export class BacktestService {
   }
 
   /** Validates, loads data and starts the run in the background. Returns the run id. */
-  start(input: unknown): number {
+  async start(input: unknown): Promise<number> {
     const req = BacktestRequestSchema.parse(input);
     if (this.active !== null) throw new BacktestInputError(`backtest #${this.active} is still running`);
+    if (this.starting) throw new BacktestInputError('another backtest is being started');
     if (req.to <= req.from) throw new BacktestInputError('"to" must be after "from"');
+    this.starting = true;
+    try {
+      return await this.launch(req);
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  private async launch(req: BacktestRequest): Promise<number> {
     const { repos, config } = this.ctx;
-    const market = req.marketId ? repos.markets.get(req.marketId) : this.markets.tradable();
+    const market = req.marketId ? await repos.markets.get(req.marketId) : this.markets.tradable();
     if (!market) throw new BacktestInputError('unknown market');
     if (market.timing !== 'TIMESTAMP')
       throw new BacktestInputError(`${market.slug} has no round timestamps and cannot be replayed`);
 
-    const specs = req.strategies.map((s, i) => {
+    const specs: { key: string; plugin: StrategyPlugin; config: StrategyConfig }[] = [];
+    for (const [i, s] of req.strategies.entries()) {
       let plugin: StrategyPlugin | undefined;
       let base: StrategyConfig;
       let key: string;
       if (s.strategyId !== undefined) {
-        const row = repos.strategies.get(s.strategyId);
+        const row = await repos.strategies.get(s.strategyId);
         if (!row) throw new BacktestInputError(`strategy ${s.strategyId} not found`);
         plugin = getPlugin(row.plugin);
         if (!plugin) throw new BacktestInputError(`plugin ${row.plugin} not found`);
@@ -113,17 +125,17 @@ export class BacktestService {
         throw new BacktestInputError('the manual strategy cannot be backtested');
       const parsed = parseStrategyConfig(plugin, mergeConfig(base, s.config));
       if (!parsed.ok) throw new BacktestInputError(`${key}: ${parsed.errors.join('; ')}`);
-      return {
+      specs.push({
         key:
           req.strategies.filter((x, j) => j < i && (x.label ?? x.plugin) === key).length > 0
             ? `${key}#${i + 1}`
             : key,
         plugin,
         config: parsed.value,
-      };
-    });
+      });
+    }
 
-    const rounds = repos.rounds.finalForBacktest(market.id, req.from, req.to);
+    const rounds = await repos.rounds.finalForBacktest(market.id, req.from, req.to);
     if (rounds.length < 10)
       throw new BacktestInputError(`only ${rounds.length} final rounds in the selected range`);
     if (rounds.length > MAX_ROUNDS)
@@ -160,7 +172,7 @@ export class BacktestService {
       globalLimits,
     });
 
-    const runId = repos.backtests.create(req);
+    const runId = await repos.backtests.create(req);
     this.active = runId;
     const started = Date.now();
     const meta = {
@@ -190,15 +202,15 @@ export class BacktestService {
           if (this.aborted) throw new Error('aborted: process shutting down');
           runner.step(STEP);
           const progress = runner.processed / runner.total;
-          repos.backtests.progress(runId, progress);
+          await repos.backtests.progress(runId, progress);
           this.ctx.bus.emit('backtest', { id: runId, status: 'RUNNING', progress });
           await new Promise((r) => setImmediate(r));
         }
         const results = runner.results().map((r) => this.summarize(r));
-        repos.backtests.finish(runId, { ...meta, results }, Date.now() - started);
+        await repos.backtests.finish(runId, { ...meta, results }, Date.now() - started);
         this.ctx.bus.emit('backtest', { id: runId, status: 'DONE', progress: 1 });
       } catch (err) {
-        repos.backtests.fail(runId, errorMessage(err));
+        await repos.backtests.fail(runId, errorMessage(err)).catch(() => undefined);
         this.ctx.log.app.error({ err, runId }, 'backtest failed');
         this.ctx.bus.emit('backtest', { id: runId, status: 'FAILED', error: errorMessage(err) });
       } finally {

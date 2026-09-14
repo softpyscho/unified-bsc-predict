@@ -55,8 +55,8 @@ export class AuditLog {
     private readonly log: Logger,
   ) {}
 
-  record(e: AuditInput): AuditEvent {
-    const event = this.repos.audit.append(e);
+  async record(e: AuditInput): Promise<AuditEvent> {
+    const event = await this.repos.audit.append(e);
     this.log[LEVEL[e.severity]](
       {
         type: e.type,

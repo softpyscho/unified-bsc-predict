@@ -185,7 +185,7 @@ export class CsvImporter {
     const { repos, config } = this.ctx;
     const slug =
       opts.marketSlug ?? (opts.format === 'PANCAKESWAP_V2' ? config.marketSlug : DEFAULT_MARKET[opts.format]);
-    const market = repos.markets.bySlug(slug);
+    const market = await repos.markets.bySlug(slug);
     if (!market) throw new Error(`unknown market "${slug}" (run migrations/seed first)`);
     if (
       opts.format === 'PANCAKESWAP_V2' &&
@@ -201,7 +201,7 @@ export class CsvImporter {
 
     const text = await readSource(opts.source);
     const lines = text.split(/\r?\n/);
-    const runId = repos.sync.startImport(market.id, opts.source);
+    const runId = await repos.sync.startImport(market.id, opts.source);
     const stats: ImportStats = {
       rowsRead: 0,
       inserted: 0,
@@ -249,10 +249,10 @@ export class CsvImporter {
     const dbConflictEpochs: number[] = [];
     for (let start = 0; start < epochs.length; start += TX_BATCH) {
       const slice = epochs.slice(start, start + TX_BATCH);
-      repos.db.tx(() => {
+      await repos.db.tx(async () => {
         for (const epoch of slice) {
           const row = firstSeen.get(epoch)!.parsed;
-          const res = repos.rounds.upsert(market.id, {
+          const res = await repos.rounds.upsert(market.id, {
             record: row.record,
             status: row.status,
             outcome: row.outcome,
@@ -289,8 +289,8 @@ export class CsvImporter {
       lastEpoch: epochs.at(-1) ?? null,
       durationMs: Date.now() - started,
     };
-    repos.sync.finishImport(runId, stats, report);
-    this.ctx.audit.record({
+    await repos.sync.finishImport(runId, stats, report);
+    await this.ctx.audit.record({
       component: 'csv-import',
       severity: stats.malformed + stats.duplicatesConflicting + stats.conflictsWithDb > 0 ? 'WARN' : 'INFO',
       type: AuditType.HISTORY_IMPORTED,

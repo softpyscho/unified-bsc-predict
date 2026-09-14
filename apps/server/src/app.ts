@@ -36,10 +36,10 @@ export interface AppDeps {
   clock?: Clock;
 }
 
-export function createApp(config: AppConfig, deps: AppDeps = {}) {
+export async function createApp(config: AppConfig, deps: AppDeps = {}) {
   const log = deps.loggers ?? createLoggers(config);
-  const db = new Db(config.databasePath);
-  migrate(db);
+  const db = await Db.open(config.databaseUrl);
+  await migrate(db);
   const repos = createRepos(db);
   const bus = new EventBus();
   const audit = new AuditLog(repos, bus, log.audit);
@@ -68,7 +68,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}) {
   };
 
   const markets = new MarketService(ctx);
-  markets.seed();
+  await markets.seed();
   const bot = new BotController(ctx);
   const settlement = new SettlementService(ctx);
   const history = new HistorySync(ctx, markets, (rounds) => settlement.settleRounds(rounds));
@@ -131,10 +131,10 @@ export function createApp(config: AppConfig, deps: AppDeps = {}) {
     async close(): Promise<void> {
       await worker.stop();
       await backtests.shutdown();
-      db.close();
+      await db.close();
       log.close();
     },
   };
 }
 
-export type App = ReturnType<typeof createApp>;
+export type App = Awaited<ReturnType<typeof createApp>>;

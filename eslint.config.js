@@ -25,6 +25,16 @@ export default defineConfig(
     },
   },
   {
+    // The data layer is async and transactions follow the async call chain, so an un-awaited query inside a
+    // transaction would run after it closes. Type-aware rules make that a lint error.
+    files: ['apps/server/src/**/*.ts'],
+    languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': ['error', { checksVoidReturn: false }],
+    },
+  },
+  {
     files: ['apps/server/src/cli.ts', 'scripts/**'],
     rules: { 'no-console': 'off' },
   },

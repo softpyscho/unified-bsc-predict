@@ -81,12 +81,12 @@ export class StrategyEngine {
 
   /** Called after every market snapshot. Evaluates each enabled strategy once per round and mode. */
   async onMarketState(state: MarketState): Promise<void> {
-    if (!this.deps.bot.canTrade() || state.stale || state.paused) return;
+    if (state.stale || state.paused || !(await this.deps.bot.canTrade())) return;
     const round = state.next;
     if (!round || round.status !== 'OPEN' || round.lockTime === null) return;
     const secondsToLock = round.lockTime - this.deps.monitor.chainNow(state)!;
     const jobs: Promise<unknown>[] = [];
-    for (const strategy of this.ctx.repos.strategies.list()) {
+    for (const strategy of await this.ctx.repos.strategies.list()) {
       if (!strategy.enabled || strategy.plugin === manualOrder.id || strategy.marketId !== state.marketId)
         continue;
       const entry = strategy.config?.timing?.entrySecondsBeforeLock ?? 30;
@@ -112,7 +112,7 @@ export class StrategyEngine {
   }): Promise<EvaluateResult> {
     const state = this.deps.monitor.state;
     if (!state) throw new EngineError(503, 'market state not available yet');
-    const strategy = this.ctx.repos.strategies.bySlug(manualOrder.id);
+    const strategy = await this.ctx.repos.strategies.bySlug(manualOrder.id);
     if (!strategy) throw new EngineError(500, 'manual strategy is not seeded');
     return this.evaluate(
       {
@@ -135,15 +135,28 @@ export class StrategyEngine {
       return none;
     }
     const key = `${strategy.id}:${round.id}:${mode}`;
-    if (this.inflight.has(key) || this.ctx.repos.decisions.exists(strategy.id, round.id, mode)) {
+    const duplicate = () => {
       if (strict)
         throw new EngineError(
           409,
           `a ${mode} decision for round ${round.epoch} already exists (${strategy.slug})`,
         );
       return none;
-    }
+    };
+    // Reserve the key before the first await so a concurrent evaluation of the same round cannot slip through.
+    if (this.inflight.has(key)) return duplicate();
     this.inflight.add(key);
+    let exists: boolean;
+    try {
+      exists = await this.ctx.repos.decisions.exists(strategy.id, round.id, mode);
+    } catch (err) {
+      this.inflight.delete(key);
+      throw err;
+    }
+    if (exists) {
+      this.inflight.delete(key);
+      return duplicate();
+    }
     const decidedAt = this.ctx.clock.nowMs();
     try {
       const now = this.deps.monitor.chainNow(state)!;
@@ -173,7 +186,7 @@ export class StrategyEngine {
         decidedAt,
         secondsToLock: (round.lockTime ?? 0) - now,
       };
-      const placed = this.deps.execution.place({
+      const placed = await this.deps.execution.place({
         strategy,
         market: this.deps.markets.tradable(),
         round,
@@ -185,7 +198,7 @@ export class StrategyEngine {
       placed.submission?.catch((err: unknown) =>
         this.ctx.log.tx.error({ err, strategy: strategy.slug }, 'live submission crashed'),
       );
-      this.auditDecision(placed.decision, strategy, decision);
+      await this.auditDecision(placed.decision, strategy, decision);
       this.ctx.bus.emit('decision', placed.decision);
       return placed;
     } catch (err) {
@@ -193,7 +206,7 @@ export class StrategyEngine {
         { err, strategy: strategy.slug, epoch: round.epoch, mode },
         'strategy evaluation failed',
       );
-      this.ctx.audit.record({
+      await this.ctx.audit.record({
         component: 'strategy-engine',
         severity: 'ERROR',
         type: AuditType.STRATEGY_ERROR,
@@ -250,16 +263,16 @@ export class StrategyEngine {
     }
 
     const lookback = lookbackFor(plugin, config);
-    const history = this.ctx.repos.rounds.recentFinal(state.marketId, round.epoch, lookback);
-    const ownTrades = this.ctx.repos.trades
-      .recentForStrategy(strategy.id, mode, round.epoch, OWN_TRADES_LOOKBACK)
-      .map((t) => ({
-        epoch: t.epoch,
-        direction: t.direction,
-        amountBnb: weiToBnb(t.amount),
-        status: t.status,
-        result: t.result,
-      }));
+    const history = await this.ctx.repos.rounds.recentFinal(state.marketId, round.epoch, lookback);
+    const ownTrades = (
+      await this.ctx.repos.trades.recentForStrategy(strategy.id, mode, round.epoch, OWN_TRADES_LOOKBACK)
+    ).map((t) => ({
+      epoch: t.epoch,
+      direction: t.direction,
+      amountBnb: weiToBnb(t.amount),
+      status: t.status,
+      result: t.result,
+    }));
     const sctx = buildContext({
       mode,
       now,
@@ -285,7 +298,7 @@ export class StrategyEngine {
       ctx: sctx,
       limits,
       state: riskState,
-      gates: this.gates(mode, strategy, state, args.source),
+      gates: await this.gates(mode, strategy, state, args.source),
       minBetWei: state.params.minBetWei,
     });
     const inputs = {
@@ -309,8 +322,13 @@ export class StrategyEngine {
   }
 
   /** Preconditions evaluated as risk checks. For LIVE this is the explicit multi-condition live-trading gate. */
-  private gates(mode: TradeMode, s: StrategyRow, state: MarketState, source: 'BOT' | 'MANUAL'): GateCheck[] {
-    const bot = this.deps.bot.view();
+  private async gates(
+    mode: TradeMode,
+    s: StrategyRow,
+    state: MarketState,
+    source: 'BOT' | 'MANUAL',
+  ): Promise<GateCheck[]> {
+    const bot = await this.deps.bot.view();
     const g = (rule: string, passed: boolean, detail: string): GateCheck => ({ rule, passed, detail });
     const running = bot.status === 'RUNNING' && bot.phase === 'READY';
     const common = [
@@ -339,7 +357,7 @@ export class StrategyEngine {
         g('STRATEGY_PAPER_ENABLED', s.paperTradingEnabled, 'strategy paper flag'),
       ];
     }
-    const signer = this.ctx.repos.wallets.signer();
+    const signer = await this.ctx.repos.wallets.signer();
     const walletValid =
       this.ctx.writer !== null &&
       signer !== undefined &&
@@ -366,7 +384,7 @@ export class StrategyEngine {
     ];
   }
 
-  private auditDecision(d: DecisionRecord, s: StrategyRow, decision: Decision): void {
+  private async auditDecision(d: DecisionRecord, s: StrategyRow, decision: Decision): Promise<void> {
     const base = {
       component: 'strategy-engine',
       marketId: d.marketId,
@@ -374,7 +392,7 @@ export class StrategyEngine {
       strategyId: s.id,
       tradeId: d.tradeId,
     };
-    this.ctx.audit.record({
+    await this.ctx.audit.record({
       ...base,
       severity: decision.error ? 'WARN' : 'INFO',
       type: decision.error ? AuditType.STRATEGY_ERROR : AuditType.SIGNAL_GENERATED,
@@ -382,7 +400,7 @@ export class StrategyEngine {
       metadata: { decisionId: d.id, indicators: d.indicators },
     });
     if (d.signal === 'BUY_UP' || d.signal === 'BUY_DOWN') {
-      this.ctx.audit.record({
+      await this.ctx.audit.record({
         ...base,
         severity: 'INFO',
         type: d.decision === 'TRADE' ? AuditType.TRADE_APPROVED : AuditType.TRADE_REJECTED,

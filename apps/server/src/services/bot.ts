@@ -38,13 +38,13 @@ export class BotController {
     return this.phaseValue;
   }
 
-  setPhase(phase: BotPhase): void {
+  async setPhase(phase: BotPhase): Promise<void> {
     this.phaseValue = phase;
-    this.emit();
+    await this.emit();
   }
 
-  view(): BotView {
-    const s = this.ctx.repos.bot.get();
+  async view(): Promise<BotView> {
+    const s = await this.ctx.repos.bot.get();
     return {
       ...s,
       phase: this.phaseValue,
@@ -57,25 +57,25 @@ export class BotController {
     };
   }
 
-  canTrade(): boolean {
-    return this.phaseValue === 'READY' && this.ctx.repos.bot.get().status === 'RUNNING';
+  async canTrade(): Promise<boolean> {
+    return this.phaseValue === 'READY' && (await this.ctx.repos.bot.get()).status === 'RUNNING';
   }
 
-  start(reason = 'operator'): BotView {
-    const cur = this.ctx.repos.bot.get();
+  async start(reason = 'operator'): Promise<BotView> {
+    const cur = await this.ctx.repos.bot.get();
     if (cur.status === 'EMERGENCY_STOPPED')
       throw new BotError('bot is emergency-stopped; reset the emergency stop first');
     if (cur.status === 'RUNNING') return this.view();
-    this.set('RUNNING', reason, AuditType.BOT_STARTED, 'INFO', `bot started (${reason})`);
+    await this.set('RUNNING', reason, AuditType.BOT_STARTED, 'INFO', `bot started (${reason})`);
     return this.view();
   }
 
-  stop(reason = 'operator'): BotView {
-    const cur = this.ctx.repos.bot.get();
+  async stop(reason = 'operator'): Promise<BotView> {
+    const cur = await this.ctx.repos.bot.get();
     if (cur.status === 'EMERGENCY_STOPPED')
       throw new BotError('bot is emergency-stopped; reset the emergency stop first');
-    this.ctx.repos.bot.update({ liveArmed: false, liveArmedAt: null });
-    this.set(
+    await this.ctx.repos.bot.update({ liveArmed: false, liveArmedAt: null });
+    await this.set(
       'STOPPED',
       reason,
       AuditType.BOT_STOPPED,
@@ -85,33 +85,39 @@ export class BotController {
     return this.view();
   }
 
-  pause(reason = 'operator'): BotView {
-    const cur = this.ctx.repos.bot.get();
+  async pause(reason = 'operator'): Promise<BotView> {
+    const cur = await this.ctx.repos.bot.get();
     if (cur.status !== 'RUNNING') throw new BotError(`cannot pause from ${cur.status}`);
-    this.set('PAUSED', reason, AuditType.BOT_PAUSED, 'INFO', `bot paused (${reason})`);
+    await this.set('PAUSED', reason, AuditType.BOT_PAUSED, 'INFO', `bot paused (${reason})`);
     return this.view();
   }
 
-  resume(reason = 'operator'): BotView {
-    const cur = this.ctx.repos.bot.get();
+  async resume(reason = 'operator'): Promise<BotView> {
+    const cur = await this.ctx.repos.bot.get();
     if (cur.status !== 'PAUSED') throw new BotError(`cannot resume from ${cur.status}`);
-    this.set('RUNNING', reason, AuditType.BOT_RESUMED, 'INFO', `bot resumed (${reason})`);
+    await this.set('RUNNING', reason, AuditType.BOT_RESUMED, 'INFO', `bot resumed (${reason})`);
     return this.view();
   }
 
   /** Immediately blocks all new executions and disarms live trading. In-flight broadcasts cannot be recalled. */
-  emergencyStop(reason = 'operator'): BotView {
-    this.ctx.repos.bot.update({ liveArmed: false, liveArmedAt: null });
-    this.set('EMERGENCY_STOPPED', reason, AuditType.EMERGENCY_STOP, 'CRITICAL', `EMERGENCY STOP: ${reason}`);
+  async emergencyStop(reason = 'operator'): Promise<BotView> {
+    await this.ctx.repos.bot.update({ liveArmed: false, liveArmedAt: null });
+    await this.set(
+      'EMERGENCY_STOPPED',
+      reason,
+      AuditType.EMERGENCY_STOP,
+      'CRITICAL',
+      `EMERGENCY STOP: ${reason}`,
+    );
     return this.view();
   }
 
-  resetEmergency(acknowledge: boolean): BotView {
-    const cur = this.ctx.repos.bot.get();
+  async resetEmergency(acknowledge: boolean): Promise<BotView> {
+    const cur = await this.ctx.repos.bot.get();
     if (cur.status !== 'EMERGENCY_STOPPED') throw new BotError('bot is not emergency-stopped');
     if (!acknowledge) throw new BotError('acknowledge=true is required to reset an emergency stop');
-    this.ctx.repos.bot.update({ consecutiveFailures: 0 });
-    this.set(
+    await this.ctx.repos.bot.update({ consecutiveFailures: 0 });
+    await this.set(
       'STOPPED',
       'emergency stop reset',
       AuditType.EMERGENCY_RESET,
@@ -121,48 +127,54 @@ export class BotController {
     return this.view();
   }
 
-  armLive(confirmation: string): BotView {
+  async armLive(confirmation: string): Promise<BotView> {
     const { config, repos } = this.ctx;
     if (!config.liveTradingEnabled)
       throw new BotError('LIVE_TRADING_ENABLED is false in the server environment');
     if (!this.ctx.writer) throw new BotError('no signing wallet configured (PRIVATE_KEY)');
-    if (repos.bot.get().status === 'EMERGENCY_STOPPED') throw new BotError('bot is emergency-stopped');
+    if ((await repos.bot.get()).status === 'EMERGENCY_STOPPED')
+      throw new BotError('bot is emergency-stopped');
     if (confirmation !== LIVE_CONFIRMATION_PHRASE)
       throw new BotError(`confirmation must be exactly "${LIVE_CONFIRMATION_PHRASE}"`);
-    repos.bot.update({ liveArmed: true, liveArmedAt: new Date().toISOString(), consecutiveFailures: 0 });
-    this.ctx.audit.record({
+    await repos.bot.update({
+      liveArmed: true,
+      liveArmedAt: new Date().toISOString(),
+      consecutiveFailures: 0,
+    });
+    await this.ctx.audit.record({
       component: 'bot',
       severity: 'WARN',
       type: AuditType.LIVE_TRADING_ARMED,
       message: `live trading armed for wallet ${this.ctx.writer.address}`,
     });
-    this.emit();
+    await this.emit();
     return this.view();
   }
 
-  disarmLive(reason = 'operator'): BotView {
-    if (!this.ctx.repos.bot.get().liveArmed) return this.view();
-    this.ctx.repos.bot.update({ liveArmed: false, liveArmedAt: null });
-    this.ctx.audit.record({
+  async disarmLive(reason = 'operator'): Promise<BotView> {
+    if (!(await this.ctx.repos.bot.get()).liveArmed) return this.view();
+    await this.ctx.repos.bot.update({ liveArmed: false, liveArmedAt: null });
+    await this.ctx.audit.record({
       component: 'bot',
       severity: 'WARN',
       type: AuditType.LIVE_TRADING_DISARMED,
       message: `live trading disarmed (${reason})`,
     });
-    this.emit();
+    await this.emit();
     return this.view();
   }
 
   /** Circuit breaker: repeated execution failures pause the bot and disarm live trading. */
-  recordExecutionFailure(detail: string): void {
+  async recordExecutionFailure(detail: string): Promise<void> {
     const { repos, config } = this.ctx;
-    const n = repos.bot.get().consecutiveFailures + 1;
-    repos.bot.update({ consecutiveFailures: n });
+    const n = (await repos.bot.get()).consecutiveFailures + 1;
+    await repos.bot.update({ consecutiveFailures: n });
     if (n >= config.maxExecutionFailures) {
-      repos.bot.update({ liveArmed: false, liveArmedAt: null });
-      const cur = repos.bot.get();
-      if (cur.status === 'RUNNING') repos.bot.update({ status: 'PAUSED', statusReason: 'circuit breaker' });
-      this.ctx.audit.record({
+      await repos.bot.update({ liveArmed: false, liveArmedAt: null });
+      const cur = await repos.bot.get();
+      if (cur.status === 'RUNNING')
+        await repos.bot.update({ status: 'PAUSED', statusReason: 'circuit breaker' });
+      await this.ctx.audit.record({
         component: 'bot',
         severity: 'CRITICAL',
         type: AuditType.RISK_LIMIT_TRIGGERED,
@@ -170,27 +182,27 @@ export class BotController {
         metadata: { rule: 'CIRCUIT_BREAKER', consecutiveFailures: n },
       });
     }
-    this.emit();
+    await this.emit();
   }
 
-  recordExecutionSuccess(): void {
-    if (this.ctx.repos.bot.get().consecutiveFailures > 0)
-      this.ctx.repos.bot.update({ consecutiveFailures: 0 });
+  async recordExecutionSuccess(): Promise<void> {
+    if ((await this.ctx.repos.bot.get()).consecutiveFailures > 0)
+      await this.ctx.repos.bot.update({ consecutiveFailures: 0 });
   }
 
-  private set(
+  private async set(
     status: BotStatus,
     reason: string,
     type: string,
     severity: 'INFO' | 'WARN' | 'CRITICAL',
     message: string,
-  ): void {
-    this.ctx.repos.bot.update({ status, statusReason: reason });
-    this.ctx.audit.record({ component: 'bot', severity, type, message });
-    this.emit();
+  ): Promise<void> {
+    await this.ctx.repos.bot.update({ status, statusReason: reason });
+    await this.ctx.audit.record({ component: 'bot', severity, type, message });
+    await this.emit();
   }
 
-  private emit(): void {
-    this.ctx.bus.emit('bot', this.view());
+  private async emit(): Promise<void> {
+    this.ctx.bus.emit('bot', await this.view());
   }
 }

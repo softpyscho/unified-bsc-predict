@@ -55,7 +55,7 @@ describe('CSV parsing', () => {
 
 describe('CSV import', () => {
   it('imports repeatably, collapses identical duplicates and excludes conflicting ones', async () => {
-    const h = makeHarness();
+    const h = await makeHarness();
     const conflicting = R408634.replace('85990000000', '85990000001');
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bsp-csv-')), 'rounds.csv');
     fs.writeFileSync(file, [V2_HEADER, R408633, R408633, R408634, conflicting, 'garbage,row', ''].join('\n'));
@@ -72,45 +72,45 @@ describe('CSV import', () => {
     const second = await h.app.csv.import({ format: 'PANCAKESWAP_V2', source: file });
     expect(second).toMatchObject({ inserted: 0, unchanged: 1 });
     const market = h.app.markets.tradable();
-    expect(h.app.repos.rounds.stats(market.id)).toMatchObject({ total: 1, final: 1, bear: 1 });
-    expect(h.app.repos.sync.imports()).toHaveLength(2);
+    expect(await h.app.repos.rounds.stats(market.id)).toMatchObject({ total: 1, final: 1, bear: 1 });
+    expect(await h.app.repos.sync.imports()).toHaveLength(2);
     await h.app.close();
   });
 });
 
 describe('history sync (simulated chain)', () => {
   it('initial sync, idempotent re-sync, and incremental finalization', async () => {
-    const h = makeHarness();
+    const h = await makeHarness();
     for (const p of [600, 601, 602, 601, 600]) await playRound(h, p * 1e8, false);
     const market = h.app.markets.tradable();
-    h.app.repos.db.exec('DELETE FROM rounds');
+    await h.app.repos.db.exec('DELETE FROM rounds');
 
     const first = await h.app.history.syncAll();
     expect(first.inserted).toBe(h.chain.currentEpoch);
-    const stats = h.app.repos.rounds.stats(market.id);
+    const stats = await h.app.repos.rounds.stats(market.id);
     expect(stats.total).toBe(h.chain.currentEpoch);
     expect(stats.final).toBe(h.chain.currentEpoch - 2); // open + live rounds are not final
     const again = await h.app.history.syncAll();
     expect(again.requested).toBe(2);
     expect(again.inserted).toBe(0);
-    expect(h.app.repos.rounds.stats(market.id).total).toBe(h.chain.currentEpoch);
+    expect((await h.app.repos.rounds.stats(market.id)).total).toBe(h.chain.currentEpoch);
 
     h.chain.execute(599e8);
     const inc = await h.app.history.syncIncremental();
     expect(inc.finalized).toBe(1);
-    expect(h.app.repos.rounds.stats(market.id).final).toBe(h.chain.currentEpoch - 2);
+    expect((await h.app.repos.rounds.stats(market.id)).final).toBe(h.chain.currentEpoch - 2);
     await h.app.close();
   });
 
   it('marks a round cancelled only after close + buffer, from chain time', async () => {
-    const h = makeHarness();
+    const h = await makeHarness();
     await playRound(h, 600e8, false); // round 1 locked
     await playRound(h, 601e8, false); // round 1 ended, round 2 locked
     const live = h.chain.currentEpoch - 1;
     h.chain.advance(900); // operator stalls: round `live` cannot be ended any more
     await h.app.monitor.tick();
     const market = h.app.markets.tradable();
-    const r = h.app.repos.rounds.get(market.id, live)!;
+    const r = (await h.app.repos.rounds.get(market.id, live))!;
     expect(r.status).toBe('CANCELLED');
     expect(r.isFinal).toBe(true);
     expect(r.outcome).toBe('CANCELLED');
@@ -118,13 +118,13 @@ describe('history sync (simulated chain)', () => {
   });
 
   it('reconciliation corrects CSV-imported data that disagrees with the chain', async () => {
-    const h = makeHarness();
+    const h = await makeHarness();
     for (const p of [600, 601, 602]) await playRound(h, p * 1e8, true);
     const market = h.app.markets.tradable();
     const epoch = 1;
     const chainRound = h.chain.round(epoch);
-    h.app.repos.db.exec(`DELETE FROM rounds WHERE epoch = ${epoch}`);
-    h.app.repos.rounds.upsert(market.id, {
+    await h.app.repos.db.exec(`DELETE FROM rounds WHERE epoch = ${epoch}`);
+    await h.app.repos.rounds.upsert(market.id, {
       record: {
         ...chainRound,
         bullAmount: chainRound.bullAmount + 1n,
@@ -138,23 +138,23 @@ describe('history sync (simulated chain)', () => {
     });
     const res = await h.app.history.reconcile();
     expect(res.sweep.corrected).toBe(1);
-    const fixed = h.app.repos.rounds.get(market.id, epoch)!;
+    const fixed = (await h.app.repos.rounds.get(market.id, epoch))!;
     expect(fixed.bullAmount).toBe(chainRound.bullAmount);
     expect(fixed.source).toBe('CHAIN');
-    expect(h.app.repos.audit.list({ type: 'ROUND_CORRECTED' }, 10)).toHaveLength(1);
+    expect(await h.app.repos.audit.list({ type: 'ROUND_CORRECTED' }, 10)).toHaveLength(1);
     await h.app.close();
   });
 
   it('flags the market as stale when RPC reads fail and recovers', async () => {
-    const h = makeHarness();
+    const h = await makeHarness();
     await h.app.monitor.tick();
     h.chain.snapshotFailures = 3;
     for (let i = 0; i < 3; i++) await h.app.monitor.tick();
     expect(h.app.monitor.state?.stale).toBe(true);
-    expect(h.app.repos.audit.list({ type: 'RPC_UNAVAILABLE' }, 5)).toHaveLength(1);
+    expect(await h.app.repos.audit.list({ type: 'RPC_UNAVAILABLE' }, 5)).toHaveLength(1);
     await h.app.monitor.tick();
     expect(h.app.monitor.state?.stale).toBe(false);
-    expect(h.app.repos.audit.list({ type: 'RPC_RECOVERED' }, 5)).toHaveLength(1);
+    expect(await h.app.repos.audit.list({ type: 'RPC_RECOVERED' }, 5)).toHaveLength(1);
     await h.app.close();
   });
 });

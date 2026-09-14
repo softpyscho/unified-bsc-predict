@@ -17,7 +17,7 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  const app = createApp(config);
+  const app = await createApp(config);
   const server = await buildServer(app);
   await server.listen({ host: config.host, port: config.port });
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(config.host);

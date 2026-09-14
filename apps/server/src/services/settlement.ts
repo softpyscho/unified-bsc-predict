@@ -17,31 +17,31 @@ import type { Ctx } from './context.js';
 export class SettlementService {
   constructor(private readonly ctx: Ctx) {}
 
-  settleRounds(rounds: readonly StoredRound[]): number {
+  async settleRounds(rounds: readonly StoredRound[]): Promise<number> {
     let n = 0;
     for (const r of rounds) {
       if (!r.isFinal) continue;
-      for (const t of this.ctx.repos.trades.forRound(r.id)) {
-        if (t.status === 'CONFIRMED' && this.settle(t, r)) n++;
+      for (const t of await this.ctx.repos.trades.forRound(r.id)) {
+        if (t.status === 'CONFIRMED' && (await this.settle(t, r))) n++;
       }
     }
     return n;
   }
 
-  settleAll(): number {
+  async settleAll(): Promise<number> {
     let n = 0;
     const cache = new Map<number, StoredRound | undefined>();
-    for (const t of this.ctx.repos.trades.settleable()) {
-      if (!cache.has(t.roundId)) cache.set(t.roundId, this.ctx.repos.rounds.getById(t.roundId));
+    for (const t of await this.ctx.repos.trades.settleable()) {
+      if (!cache.has(t.roundId)) cache.set(t.roundId, await this.ctx.repos.rounds.getById(t.roundId));
       const r = cache.get(t.roundId);
-      if (r?.isFinal && this.settle(t, r)) n++;
+      if (r?.isFinal && (await this.settle(t, r))) n++;
     }
     return n;
   }
 
-  private settle(t: Trade, r: StoredRound): boolean {
+  private async settle(t: Trade, r: StoredRound): Promise<boolean> {
     const { repos, config } = this.ctx;
-    const market = repos.markets.get(t.marketId)!;
+    const market = (await repos.markets.get(t.marketId))!;
     const outcome = r.outcome!;
     const payout =
       t.mode === 'LIVE'
@@ -63,7 +63,7 @@ export class SettlementService {
     });
     let settled: Trade;
     try {
-      settled = repos.trades.transition(
+      settled = await repos.trades.transition(
         t.id,
         'CONFIRMED',
         'SETTLED',
@@ -82,14 +82,14 @@ export class SettlementService {
       tradeId: t.id,
       txHash: t.txHash,
     };
-    this.ctx.audit.record({
+    await this.ctx.audit.record({
       ...base,
       severity: 'INFO',
       type: AuditType.TRADE_SETTLED,
       message: `${t.mode} ${t.direction} on round ${t.epoch} ${result}: payout ${weiToBnbString(payout)} BNB, net ${weiToBnbString(netPnl ?? 0n)} BNB`,
     });
     if (claimStatus === 'UNCLAIMED') {
-      this.ctx.audit.record({
+      await this.ctx.audit.record({
         ...base,
         severity: 'INFO',
         type: AuditType.PAYOUT_DETECTED,

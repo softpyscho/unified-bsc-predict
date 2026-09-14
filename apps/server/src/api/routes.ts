@@ -9,7 +9,6 @@ import {
   parseStrategyConfig,
 } from '@bsc/core';
 import type { FastifyInstance } from 'fastify';
-import fs from 'node:fs';
 import { getAddress, isAddress } from 'viem';
 import { z } from 'zod';
 import type { App } from '../app.js';
@@ -57,20 +56,25 @@ function utcDayStart(ms: number): number {
 export function registerRoutes(server: FastifyInstance, app: App, sessions: Sessions): void {
   const { repos, config } = app;
   const tradable = () => app.markets.tradable();
-  const strategySlugs = () => new Map(repos.strategies.list().map((s) => [s.id, s.slug]));
+  const strategySlugs = async () => new Map((await repos.strategies.list()).map((s) => [s.id, s.slug]));
+  const withStats = async (m: { id: number }) => ({
+    stats: await repos.rounds.stats(m.id, STATS_MAX_AGE_MS),
+    timeRange: await repos.rounds.timeRange(m.id),
+  });
 
-  const modeOverview = (mode: TradeMode) => {
-    const signer = repos.wallets.signer();
+  const modeOverview = async (mode: TradeMode) => {
+    const signer = await repos.wallets.signer();
     if (mode === 'LIVE' && !signer)
       return {
-        account: app.portfolio.liveAccount(),
+        account: await app.portfolio.liveAccount(),
         summary: computeSummary([]),
         todayPnl: 0n,
         todayTrades: 0,
       };
-    const trades = repos.trades.all({ mode, walletId: mode === 'LIVE' ? signer!.id : undefined });
-    const account = mode === 'PAPER' ? app.portfolio.paperAccount() : app.portfolio.liveAccount(signer!.id);
-    const entries = app.portfolio.toEntries(trades);
+    const trades = await repos.trades.all({ mode, walletId: mode === 'LIVE' ? signer!.id : undefined });
+    const account =
+      mode === 'PAPER' ? await app.portfolio.paperAccount() : await app.portfolio.liveAccount(signer!.id);
+    const entries = await app.portfolio.toEntries(trades);
     const dayStart = utcDayStart(app.ctx.clock.nowMs());
     let todayPnl = 0n;
     let todayTrades = 0;
@@ -87,10 +91,12 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
 
   server.get('/api/health', async () => {
     const state = app.monitor.state;
-    const bot = app.bot.view();
     let db = 'ok';
+    let bot: { status: string; phase: string } = { status: 'UNKNOWN', phase: app.bot.phase };
     try {
-      repos.db.get('SELECT 1');
+      await repos.db.get('SELECT 1');
+      const view = await app.bot.view();
+      bot = { status: view.status, phase: view.phase };
     } catch {
       db = 'error';
     }
@@ -107,7 +113,7 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
         currentEpoch: state?.currentEpoch ?? null,
         lastError: state?.lastError ?? null,
       },
-      bot: { status: bot.status, phase: bot.phase },
+      bot,
       workerLoops: app.worker.loopsRunning,
     };
   });
@@ -119,7 +125,7 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
     const body = z.object({ token: z.string().min(1).max(512) }).parse(req.body);
     if (!sessions.verifyToken(body.token)) {
       sessions.recordFailure(ip);
-      app.audit.record({
+      await app.audit.record({
         component: 'api',
         severity: 'WARN',
         type: AuditType.AUTH_FAILED,
@@ -147,31 +153,33 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
   server.get('/api/auth/me', async () => ({ authenticated: true }));
 
   server.get('/api/overview', async () => {
-    const slugs = strategySlugs();
-    const latestTrades = repos.trades.list({}, { limit: 10, offset: 0, order: 'desc' }).rows.map((t) => ({
-      ...t,
-      strategySlug: t.strategyId === null ? null : (slugs.get(t.strategyId) ?? null),
+    const slugs = await strategySlugs();
+    const latestTrades = (await repos.trades.list({}, { limit: 10, offset: 0, order: 'desc' })).rows.map(
+      (t) => ({
+        ...t,
+        strategySlug: t.strategyId === null ? null : (slugs.get(t.strategyId) ?? null),
+      }),
+    );
+    const latestDecisions = (await repos.decisions.list({}, { limit: 10, offset: 0 })).rows.map((d) => ({
+      ...d,
+      strategySlug: slugs.get(d.strategyId) ?? null,
     }));
-    const latestDecisions = repos.decisions
-      .list({}, { limit: 10, offset: 0 })
-      .rows.map((d) => ({ ...d, strategySlug: slugs.get(d.strategyId) ?? null }));
     const alerts = [
-      ...repos.audit.list({ severity: 'CRITICAL' }, 5),
-      ...repos.audit.list({ severity: 'ERROR' }, 10),
-      ...repos.audit.list({ severity: 'WARN' }, 10),
+      ...(await repos.audit.list({ severity: 'CRITICAL' }, 5)),
+      ...(await repos.audit.list({ severity: 'ERROR' }, 10)),
+      ...(await repos.audit.list({ severity: 'WARN' }, 10)),
     ]
       .sort((a, b) => b.id - a.id)
       .slice(0, 10);
     return {
       market: app.monitor.state,
-      bot: app.bot.view(),
-      paper: modeOverview('PAPER'),
-      live: modeOverview('LIVE'),
+      bot: await app.bot.view(),
+      paper: await modeOverview('PAPER'),
+      live: await modeOverview('LIVE'),
       latestTrades,
       latestDecisions,
       alerts,
-      activeStrategies: repos.strategies
-        .list()
+      activeStrategies: (await repos.strategies.list())
         .filter((s) => s.enabled && s.plugin !== manualOrder.id)
         .map((s) => ({
           id: s.id,
@@ -184,24 +192,21 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
   });
 
   server.get('/api/settings', async () => {
-    let dbSize: number | null = null;
-    if (config.databasePath !== ':memory:') {
-      try {
-        dbSize = fs.statSync(config.databasePath).size;
-      } catch {
-        dbSize = null;
-      }
-    }
+    const dbSize = await repos.db.sizeBytes().catch(() => null);
     return {
       config: publicConfig(config),
       database: {
+        engine: repos.db.engine,
         sizeBytes: dbSize,
-        markets: repos.markets
-          .list()
-          .map((m) => ({ slug: m.slug, ...repos.rounds.stats(m.id, STATS_MAX_AGE_MS) })),
+        markets: await Promise.all(
+          (await repos.markets.list()).map(async (m) => ({
+            slug: m.slug,
+            ...(await repos.rounds.stats(m.id, STATS_MAX_AGE_MS)),
+          })),
+        ),
       },
-      imports: repos.sync.imports(),
-      sync: repos.sync.get(tradable().id),
+      imports: await repos.sync.imports(),
+      sync: await repos.sync.get(tradable().id),
       plugins: [...BUILTIN_STRATEGIES, manualOrder].map((p) => ({
         id: p.id,
         name: p.name,
@@ -218,23 +223,14 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
   // ------------------------------------------------------------------------------------------------ markets & rounds
 
   server.get('/api/markets', async () =>
-    repos.markets.list().map((m) => ({
-      ...m,
-      stats: repos.rounds.stats(m.id, STATS_MAX_AGE_MS),
-      timeRange: repos.rounds.timeRange(m.id),
-    })),
+    Promise.all((await repos.markets.list()).map(async (m) => ({ ...m, ...(await withStats(m)) }))),
   );
 
   server.get('/api/markets/:id', async (req) => {
     const { id } = idParam.parse(req.params);
-    const m = repos.markets.get(id);
+    const m = await repos.markets.get(id);
     if (!m) throw new HttpError(404, 'market not found');
-    return {
-      ...m,
-      stats: repos.rounds.stats(m.id, STATS_MAX_AGE_MS),
-      timeRange: repos.rounds.timeRange(m.id),
-      sync: repos.sync.get(m.id),
-    };
+    return { ...m, ...(await withStats(m)), sync: await repos.sync.get(m.id) };
   });
 
   server.get('/api/rounds/current', async (_req, reply) => {
@@ -275,23 +271,24 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
   server.get('/api/rounds/:epoch', async (req) => {
     const { epoch } = z.object({ epoch: int.nonnegative() }).parse(req.params);
     const { marketId } = z.object({ marketId: int.positive().optional() }).parse(req.query);
-    const market = marketId ? repos.markets.get(marketId) : tradable();
+    const market = marketId ? await repos.markets.get(marketId) : tradable();
     if (!market) throw new HttpError(404, 'market not found');
-    const round = repos.rounds.get(market.id, epoch);
+    const round = await repos.rounds.get(market.id, epoch);
     if (!round) throw new HttpError(404, `round ${epoch} not found`);
-    const slugs = strategySlugs();
+    const slugs = await strategySlugs();
     return {
       market: { id: market.id, slug: market.slug, treasuryFeeBps: market.treasuryFeeBps },
       round,
-      decisions: repos.decisions
-        .forRound(round.id)
-        .map((d) => ({ ...d, strategySlug: slugs.get(d.strategyId) ?? null })),
-      trades: repos.trades.forRound(round.id).map((t) => ({
+      decisions: (await repos.decisions.forRound(round.id)).map((d) => ({
+        ...d,
+        strategySlug: slugs.get(d.strategyId) ?? null,
+      })),
+      trades: (await repos.trades.forRound(round.id)).map((t) => ({
         ...t,
         strategySlug: t.strategyId === null ? null : (slugs.get(t.strategyId) ?? null),
       })),
-      corrections: repos.rounds.corrections(round.id),
-      audit: repos.audit.list({ epoch }, 100),
+      corrections: await repos.rounds.corrections(round.id),
+      audit: await repos.audit.list({ epoch }, 100),
     };
   });
 
@@ -331,22 +328,25 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       minAmountWei: q.minAmount,
       maxAmountWei: q.maxAmount,
     };
-    const { rows, total } = repos.trades.list(filter, { limit: q.limit, offset: q.offset, order: q.order });
-    const all = repos.trades.all(filter);
-    const entries = app.portfolio.toEntries(all);
+    const { rows, total } = await repos.trades.list(filter, {
+      limit: q.limit,
+      offset: q.offset,
+      order: q.order,
+    });
+    const entries = await app.portfolio.toEntries(await repos.trades.all(filter));
     const onlyAccountFilter = Object.entries(filter).every(
       ([k, v]) => v === undefined || k === 'mode' || k === 'walletId',
     );
     const account =
       q.mode === 'PAPER'
-        ? app.portfolio.paperAccount()
+        ? await app.portfolio.paperAccount()
         : q.mode === 'LIVE'
-          ? app.portfolio.liveAccount(q.walletId)
+          ? await app.portfolio.liveAccount(q.walletId)
           : null;
     const start = onlyAccountFilter ? (account?.startingBankroll ?? null) : null;
     const ann = annotateLedger(entries, start);
-    const slugs = strategySlugs();
-    const wallets = new Map(repos.wallets.list().map((w) => [w.id, w.address]));
+    const slugs = await strategySlugs();
+    const wallets = new Map((await repos.wallets.list()).map((w) => [w.id, w.address]));
     return {
       total,
       summary: computeSummary(entries, null),
@@ -362,14 +362,14 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
 
   server.get('/api/trades/:id', async (req) => {
     const { id } = idParam.parse(req.params);
-    const t = repos.trades.get(id);
+    const t = await repos.trades.get(id);
     if (!t) throw new HttpError(404, 'trade not found');
     return {
       trade: t,
-      events: repos.trades.events(id),
-      decision: t.decisionId ? repos.decisions.get(t.decisionId) : null,
-      round: repos.rounds.getById(t.roundId),
-      strategy: t.strategyId ? repos.strategies.get(t.strategyId) : null,
+      events: await repos.trades.events(id),
+      decision: t.decisionId ? await repos.decisions.get(t.decisionId) : null,
+      round: await repos.rounds.getById(t.roundId),
+      strategy: t.strategyId ? await repos.strategies.get(t.strategyId) : null,
     };
   });
 
@@ -394,8 +394,8 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
         epoch: int.optional(),
       })
       .parse(req.query);
-    const slugs = strategySlugs();
-    const res = repos.decisions.list(q, { limit: q.limit, offset: q.offset });
+    const slugs = await strategySlugs();
+    const res = await repos.decisions.list(q, { limit: q.limit, offset: q.offset });
     return {
       total: res.total,
       rows: res.rows.map((d) => ({ ...d, strategySlug: slugs.get(d.strategyId) ?? null })),
@@ -430,12 +430,12 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
 
   // ------------------------------------------------------------------------------------------------ strategies
 
-  const strategyView = (id: number) => {
-    const s = repos.strategies.get(id);
+  const strategyView = async (id: number) => {
+    const s = await repos.strategies.get(id);
     if (!s) throw new HttpError(404, 'strategy not found');
     const plugin = getPlugin(s.plugin);
-    const perf = (mode: TradeMode) =>
-      computeSummary(app.portfolio.toEntries(repos.trades.all({ mode, strategyId: s.id })));
+    const perf = async (mode: TradeMode) =>
+      computeSummary(await app.portfolio.toEntries(await repos.trades.all({ mode, strategyId: s.id })));
     return {
       ...s,
       plugin: plugin
@@ -448,30 +448,33 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
             defaults: plugin.defaults,
           }
         : null,
-      performance: { PAPER: perf('PAPER'), LIVE: perf('LIVE') },
+      performance: { PAPER: await perf('PAPER'), LIVE: await perf('LIVE') },
       decisions: {
-        total: repos.decisions.list({ strategyId: s.id }, { limit: 1, offset: 0 }).total,
-        trades: repos.decisions.list({ strategyId: s.id, decision: 'TRADE' }, { limit: 1, offset: 0 }).total,
+        total: (await repos.decisions.list({ strategyId: s.id }, { limit: 1, offset: 0 })).total,
+        trades: (await repos.decisions.list({ strategyId: s.id, decision: 'TRADE' }, { limit: 1, offset: 0 }))
+          .total,
       },
     };
   };
 
-  server.get('/api/strategies', async () => repos.strategies.list().map((s) => strategyView(s.id)));
+  server.get('/api/strategies', async () =>
+    Promise.all((await repos.strategies.list()).map((s) => strategyView(s.id))),
+  );
 
   server.get('/api/strategies/:id', async (req) => {
     const { id } = idParam.parse(req.params);
     return {
-      ...strategyView(id),
-      recentDecisions: repos.decisions.list({ strategyId: id }, { limit: 25, offset: 0 }).rows,
+      ...(await strategyView(id)),
+      recentDecisions: (await repos.decisions.list({ strategyId: id }, { limit: 25, offset: 0 })).rows,
     };
   });
 
   server.get('/api/strategies/:id/performance', async (req) => {
     const { id } = idParam.parse(req.params);
-    if (!repos.strategies.get(id)) throw new HttpError(404, 'strategy not found');
+    if (!(await repos.strategies.get(id))) throw new HttpError(404, 'strategy not found');
     return {
-      PAPER: app.portfolio.report({ mode: 'PAPER', strategyId: id }).report,
-      LIVE: app.portfolio.report({ mode: 'LIVE', strategyId: id }).report,
+      PAPER: (await app.portfolio.report({ mode: 'PAPER', strategyId: id })).report,
+      LIVE: (await app.portfolio.report({ mode: 'LIVE', strategyId: id })).report,
     };
   });
 
@@ -485,15 +488,15 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
         config: z.record(z.string(), z.unknown()).optional(),
       })
       .parse(req.body);
-    const s = repos.strategies.get(id);
+    const s = await repos.strategies.get(id);
     if (!s) throw new HttpError(404, 'strategy not found');
     const plugin = getPlugin(s.plugin);
     if (!plugin) throw new HttpError(409, `plugin ${s.plugin} is not available`);
     if (body.config) {
       const parsed = parseStrategyConfig(plugin, body.config);
       if (!parsed.ok) throw new HttpError(400, `invalid config: ${parsed.errors.join('; ')}`);
-      repos.strategies.updateConfig(id, parsed.value);
-      app.audit.record({
+      await repos.strategies.updateConfig(id, parsed.value);
+      await app.audit.record({
         component: 'api',
         severity: 'INFO',
         type: AuditType.STRATEGY_CONFIG_CHANGED,
@@ -507,12 +510,12 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       body.paperTradingEnabled !== undefined ||
       body.liveTradingEnabled !== undefined
     ) {
-      const updated = repos.strategies.setFlags(id, body);
+      const updated = await repos.strategies.setFlags(id, body);
       const changes = (['enabled', 'paperTradingEnabled', 'liveTradingEnabled'] as const).filter(
         (k) => body[k] !== undefined && body[k] !== s[k],
       );
       for (const k of changes) {
-        app.audit.record({
+        await app.audit.record({
           component: 'api',
           severity: k === 'liveTradingEnabled' && updated[k] ? 'WARN' : 'INFO',
           type: updated[k] ? AuditType.STRATEGY_ENABLED : AuditType.STRATEGY_DISABLED,
@@ -528,10 +531,10 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
 
   server.get('/api/bot/status', async () => {
     const state = app.monitor.state;
-    const last = repos.decisions.list({}, { limit: 1, offset: 0 }).rows[0] ?? null;
-    const lastTrade = repos.trades.list({}, { limit: 1, offset: 0, order: 'desc' }).rows[0] ?? null;
+    const last = (await repos.decisions.list({}, { limit: 1, offset: 0 })).rows[0] ?? null;
+    const lastTrade = (await repos.trades.list({}, { limit: 1, offset: 0, order: 'desc' })).rows[0] ?? null;
     return {
-      ...app.bot.view(),
+      ...(await app.bot.view()),
       inflightExecutions: app.execution.inflightCount,
       currentEpoch: state?.currentEpoch ?? null,
       secondsToLock: state?.next?.lockTime
@@ -540,8 +543,8 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       marketStale: state?.stale ?? true,
       lastDecision: last,
       lastTrade,
-      recentErrors: repos.audit.list({ severity: 'ERROR' }, 5),
-      openLiveTrades: repos.trades.byStatus(['PENDING', 'SUBMITTING', 'SUBMITTED'], 'LIVE'),
+      recentErrors: await repos.audit.list({ severity: 'ERROR' }, 5),
+      openLiveTrades: await repos.trades.byStatus(['PENDING', 'SUBMITTING', 'SUBMITTED'], 'LIVE'),
     };
   });
   server.post('/api/bot/start', async (req) => app.bot.start(reasonBody.parse(req.body ?? {}).reason));
@@ -564,13 +567,13 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
   // ------------------------------------------------------------------------------------------------ backtests
 
   server.post('/api/backtest', async (req, reply) => {
-    const id = app.backtests.start(req.body);
+    const id = await app.backtests.start(req.body);
     return reply.code(202).send({ id });
   });
   server.get('/api/backtest', async () => repos.backtests.list(50));
   server.get('/api/backtest/:id', async (req) => {
     const { id } = idParam.parse(req.params);
-    const run = repos.backtests.get(id);
+    const run = await repos.backtests.get(id);
     if (!run) throw new HttpError(404, 'backtest not found');
     return run;
   });
@@ -578,10 +581,12 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
   // ------------------------------------------------------------------------------------------------ wallets & claims
 
   server.get('/api/wallets', async () =>
-    repos.wallets.list().map((w) => ({
-      ...w,
-      trades: repos.trades.list({ walletId: w.id }, { limit: 1, offset: 0, order: 'desc' }).total,
-    })),
+    Promise.all(
+      (await repos.wallets.list()).map(async (w) => ({
+        ...w,
+        trades: (await repos.trades.list({ walletId: w.id }, { limit: 1, offset: 0, order: 'desc' })).total,
+      })),
+    ),
   );
 
   server.post('/api/wallets', async (req) => {
@@ -590,10 +595,10 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       .parse(req.body);
     if (!isAddress(body.address)) throw new HttpError(400, 'invalid address');
     const address = getAddress(body.address);
-    if (repos.wallets.byAddress(address)?.kind === 'SIGNER')
+    if ((await repos.wallets.byAddress(address))?.kind === 'SIGNER')
       throw new HttpError(409, 'this is the signing wallet');
-    const w = repos.wallets.upsert(address, 'WATCH', body.label);
-    app.audit.record({
+    const w = await repos.wallets.upsert(address, 'WATCH', body.label);
+    await app.audit.record({
       component: 'api',
       severity: 'INFO',
       type: AuditType.WALLET_ADDED,
@@ -604,12 +609,12 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
 
   server.post('/api/wallets/:id/sync', async (req) => {
     const { id } = idParam.parse(req.params);
-    if (!repos.wallets.get(id)) throw new HttpError(404, 'wallet not found');
+    if (!(await repos.wallets.get(id))) throw new HttpError(404, 'wallet not found');
     return app.walletSync.syncWallet(id);
   });
 
   server.get('/api/wallet', async () => {
-    const signer = repos.wallets.signer();
+    const signer = await repos.wallets.signer();
     let balance: bigint | null = null;
     let balanceError: string | null = null;
     if (signer) {
@@ -626,12 +631,12 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       hasSigner: app.ctx.writer !== null,
       balance,
       balanceError,
-      account: signer ? app.portfolio.liveAccount(signer.id) : null,
-      unclaimed: signer ? repos.trades.unclaimed(signer.id, market.id) : [],
-      claims: repos.claims.list(20),
+      account: signer ? await app.portfolio.liveAccount(signer.id) : null,
+      unclaimed: signer ? await repos.trades.unclaimed(signer.id, market.id) : [],
+      claims: await repos.claims.list(20),
       liveTradingEnabled: config.liveTradingEnabled,
-      liveArmed: app.bot.view().liveArmed,
-      paperAccount: app.portfolio.paperAccount(),
+      liveArmed: (await app.bot.view()).liveArmed,
+      paperAccount: await app.portfolio.paperAccount(),
     };
   });
 
@@ -656,7 +661,7 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
     return repos.audit.list(q, q.limit);
   });
 
-  server.get('/api/stream', (req, reply) => {
+  server.get('/api/stream', async (req, reply) => {
     reply.hijack();
     const res = reply.raw;
     res.writeHead(200, {
@@ -669,7 +674,7 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       res.write(
         `event: ${event}\ndata: ${JSON.stringify(data, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v))}\n\n`,
       );
-    send('hello', { bot: app.bot.view(), market: app.monitor.state });
+    send('hello', { bot: await app.bot.view(), market: app.monitor.state });
     const off = app.bus.on((e) => send(e.type, e.data));
     const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
     req.raw.on('close', () => {

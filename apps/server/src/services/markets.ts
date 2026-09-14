@@ -57,13 +57,15 @@ export const HISTORICAL_MARKETS: readonly MarketInput[] = [
 
 export class MarketService {
   private cached: { params: ContractParams; at: number } | null = null;
+  /** The tradable market row, loaded by `seed()` and refreshed whenever contract parameters are re-read. */
+  private tradableMarket: Market | null = null;
 
   constructor(private readonly ctx: Ctx) {}
 
   /** Idempotent: safe to run on every start. Never overwrites operator-edited strategy configs. */
-  seed(): Market {
+  async seed(): Promise<Market> {
     const { config, repos } = this.ctx;
-    const tradable = repos.markets.upsert({
+    const tradable = await repos.markets.upsert({
       slug: config.marketSlug,
       name:
         config.chainId === 56
@@ -87,7 +89,7 @@ export class MarketService {
       description:
         '5-minute binary rounds on the Chainlink BNB/USD price. Parameters are read from the contract.',
     });
-    if (config.chainId === 56) for (const m of HISTORICAL_MARKETS) repos.markets.upsert(m);
+    if (config.chainId === 56) for (const m of HISTORICAL_MARKETS) await repos.markets.upsert(m);
 
     const plugins: StrategyPlugin[] = [...BUILTIN_STRATEGIES, manualOrder as StrategyPlugin];
     for (const plugin of plugins) {
@@ -98,7 +100,7 @@ export class MarketService {
         // be seeded with sizing.mode SIGNAL — a fixed per-trade stake would defeat the ladder entirely.
         seedConfig.sizing.mode = 'SIGNAL';
       }
-      repos.strategies.insertIfMissing({
+      await repos.strategies.insertIfMissing({
         slug: plugin.id,
         plugin: plugin.id,
         name: plugin.name,
@@ -112,19 +114,23 @@ export class MarketService {
       });
     }
     if (config.walletAddress) {
-      const existing = repos.wallets.byAddress(config.walletAddress);
+      const existing = await repos.wallets.byAddress(config.walletAddress);
       const kind = config.hasSigner ? 'SIGNER' : 'WATCH';
       if (!existing || existing.kind !== kind) {
-        repos.wallets.upsert(config.walletAddress, kind, config.hasSigner ? 'Bot wallet' : 'Watched wallet');
+        await repos.wallets.upsert(
+          config.walletAddress,
+          kind,
+          config.hasSigner ? 'Bot wallet' : 'Watched wallet',
+        );
       }
     }
+    this.tradableMarket = tradable;
     return tradable;
   }
 
   tradable(): Market {
-    const m = this.ctx.repos.markets.bySlug(this.ctx.config.marketSlug);
-    if (!m) throw new Error('tradable market not seeded');
-    return m;
+    if (!this.tradableMarket) throw new Error('tradable market not seeded');
+    return this.tradableMarket;
   }
 
   get cachedParams(): ContractParams | null {
@@ -135,7 +141,9 @@ export class MarketService {
   async params(maxAgeMs = 10 * 60_000): Promise<ContractParams> {
     if (this.cached && this.ctx.clock.nowMs() - this.cached.at < maxAgeMs) return this.cached.params;
     const params = await this.ctx.reader.getParams();
-    this.ctx.repos.markets.updateParams(this.tradable().id, params);
+    const id = this.tradable().id;
+    await this.ctx.repos.markets.updateParams(id, params);
+    this.tradableMarket = (await this.ctx.repos.markets.get(id)) ?? this.tradableMarket;
     this.cached = { params, at: this.ctx.clock.nowMs() };
     return params;
   }
