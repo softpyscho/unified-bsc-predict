@@ -79,3 +79,109 @@ Canonical database with integrity constraints; decisions persisted for every rou
 live-trading gate; circuit breaker; restart recovery and transaction reconciliation; settlement with exact payouts;
 portfolio analytics; backtesting with look-ahead protection; audit log; authentication; SSE real-time dashboard;
 CLI; Docker; tests.
+
+## Phase 1 re-audit (2026-09-15)
+
+Re-cloned and re-read at bsc-prediction-market `148bb3d` (2022-10-02), bsc-predict-bot `6556cee` (2021-12-12) and
+bsc-predict-updater `c1cf1e7` (2025-08-31). Every source file was read; blog posts and lottery pages were skimmed.
+This section adds to, and in places corrects, the 2026-09-13 summary above. Paths are relative to each repository.
+
+### Migration matrix
+
+| Functionality                         | Source repo                 | Preserve | Rewrite | Drop | Rationale                                                                                                                                                                        |
+| ------------------------------------- | --------------------------- | :------: | :-----: | :--: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Market UI                             | prediction-market           |          |    ✓    |      | Concepts kept (rounds table, countdown, bet modal, claim, history). The Next 12 / React 17 / web3.js 1.x code, hard-coded 3% fee and dead data sources are not worth porting.    |
+| Historical updater                    | updater                     |          |    ✓    |      | One RPC call per epoch, non-atomic CSV appends, git as the datastore → Multicall sync, idempotent upserts, reconciliation.                                                       |
+| Historical data (CSV)                 | updater                     |    ✓     |         |      | Imported once with duplicate and corruption checks; 400/400 spot-checked rounds match chain (Phase 0).                                                                           |
+| Round model                           | updater / bot               |          |    ✓    |      | Floats for wei and string-parsed booleans → exact bigint model in `packages/core/src/round.ts`.                                                                                  |
+| Web3 layer                            | bot / updater               |          |    ✓    |      | One hard-coded RPC, no retry, fallback or Multicall → viem fallback transport + Multicall3.                                                                                      |
+| Bet execution                         | bot                         |          |    ✓    |      | Fire-and-forget, success logged on submission, `latest` nonce → simulate / estimate / sign / persist / broadcast / receipt, one bet per (wallet, epoch).                         |
+| Claim logic                           | bot                         |          |    ✓    |      | Claims winners only, never refunds, re-downloads the whole CSV each attempt → contract claimability check including refunds (`apps/server/src/services/claims.ts:50`), batching. |
+| Strategy framework                    | bot                         |          |    ✓    |      | `get_bet(round)` with wall-clock timing inside each strategy → pure `StrategyPlugin` signals; timing owned by the engine.                                                        |
+| Existing APIs                         | prediction-market           |          |         |  ✓   | `api/index.ts` only loads blog posts. The data "API" is GitHub CSVs (frozen Aug 2025) and The Graph's retired hosted service.                                                    |
+| Leaderboards, lottery, blog, Mixpanel | prediction-market / updater |          |         |  ✓   | Out of scope (see the feature matrix above).                                                                                                                                     |
+
+### Bugs
+
+bsc-predict-bot
+
+- `strategies/BaseBot.py:76-88` — `sleep()` sits inside `if bettable_round:`, so outside the betting window the loop
+  re-reads rounds and oracle prints continuously with no pause.
+- `strategies/BaseBot.py:54-55` — bets only from `startTimestamp + 30` (the close buffer used as a start delay) and
+  allows `now == lockTimestamp`, where the contract reverts. Timing uses the local clock, not chain time.
+- `strategies/BaseBot.py:81-85` — the epoch is marked as bet before sending; "Bet success" is logged on submission and
+  the receipt is never checked.
+- `strategies/BaseBot.py:73,87` — `logging.error("…", e)` passes the exception as a format argument, so its text is
+  lost.
+- `main.py:26-33,50` — `--min` balance is parsed and stored but never enforced (`strategies/utils.py`'s balance helper
+  is unused).
+- `contracts/prediction.py:93` — only rounds the bet side won are claimed; cancelled-round refunds are never claimed.
+- `contracts/prediction.py:77` — every claim attempt (every 300 s) calls `get_history()`, re-downloading the full
+  ~100 MB CSV and then fetching each missing epoch with its own call.
+- `contracts/prediction.py:61,103` — nonce from `getTransactionCount` (latest, not pending), so a bet and a claim in
+  flight together collide.
+- `config.py:14` — oracle `0xD276…` is stale; the contract's `oracle()` returns `0x0567F232…aeE`, so `TrendingBot`
+  reads a feed the contract no longer settles on.
+- `contracts/oracle.py:18-31` — walks Chainlink round ids one call at a time assuming they are contiguous; a proxy
+  phase change breaks it.
+
+bsc-predict-updater
+
+- `update_predict.py:1` — unused `from distutils…` import; `distutils` was removed in Python 3.12, so the script no
+  longer starts on current Python.
+- `update_predict.py:112` — PRDT rows are written once `r < cur - 1` whether or not the round is final, and never
+  revisited.
+- `update_predict.py:100,149` — plain appends with no lock or atomic write, consistent with the 14,365 duplicate rows
+  and the truncated, fused row found at import.
+- `update_predict.py:134` — `bufferSeconds` hard-coded to 30 behind a "why does this fail?" TODO, although the shipped
+  ABI does contain `bufferSeconds`.
+- `update-git.sh:1-13` — deletes `.git`, re-initialises and force-pushes on every run.
+
+bsc-prediction-market
+
+- `src/utils/bets.ts:31-35` — a cancelled-round refund is booked as profit equal to the stake in history and drawdown;
+  `:51-53` bets on unknown rounds count as break-even.
+- `src/contracts/prediction.ts:144-145`, `src/thunks/round.ts:95`, `src/thunks/bet.ts:104`,
+  `src/stores/gameSlice.ts:28` — payout multipliers hard-code the 3% fee; `src/thunks/game.ts:18-24` reads
+  `treasuryFee()` from the contract, but nothing uses the result.
+- `src/contracts/prediction.ts:109-139` — `fetchUserRounds` swallows errors and returns partial history after one
+  failure.
+- `src/contracts/oracle.ts:2` — same stale oracle address as the bot.
+
+### Duplicated logic
+
+- The Prediction V2 ABI is copied into all three repositories (byte-identical, md5 `07a4642c`).
+- Round-tuple parsing exists four times (bot `RoundClass`, updater raw rows, market `toRound`, market GraphQL mappers);
+  payout maths five times (four in the market, plus the bot's claimability check).
+- The market alone reads round history from three sources: GitHub CSVs, direct contract calls and The Graph.
+- Web3 and contract construction is repeated per call site (`web3_provider.py`, `get_web3`, `web3Provider`,
+  `getPredictionContract`, `BnbUsdt.fetchRounds`).
+
+### Obsolete code and dependencies
+
+- The Graph hosted-service endpoint (`src/constants.ts:45`) and the GitHub CSV pipeline (`src/constants.ts:23-43`,
+  `config.py:12`): both dead.
+- 2021-era pins (web3.py 5.21, aiohttp 3.7.4 in `requirements.txt`); Next 12, React 17, web3.js 1.x; `distutils`.
+- Lottery, blog, leaderboards, Mixpanel, `get-pip.py`, `update-git.sh`, unused `deque` reads in
+  `update_predict.py:118-119,167-168`.
+
+### Unsafe assumptions
+
+- The treasury fee is a constant 3% (market); `bufferSeconds` is a constant 30 (bot, updater).
+- The oracle address never changes (bot, market).
+- A sent transaction is a successful one, and the latest nonce is safe to reuse (bot).
+- The local clock equals chain time (bot betting window).
+- Wei amounts fit in floats (`RoundClass.py`, `Number(...)` throughout the market — exact only below ~0.009 BNB).
+- GitHub-hosted CSVs are current (market, bot).
+- Chainlink round ids are contiguous (bot).
+- The market labels the pair "BNB/USDT" and prices balances from Binance spot (`src/constants.ts:19`), while rounds
+  settle on the Chainlink BNB/USD feed.
+
+Not a problem: the `.env` committed to bsc-prediction-market holds only public RPC URLs and the site URL.
+
+### Status in this repository
+
+The current codebase already implements every rewrite target above. I spot-checked the areas these bugs touch: the fee,
+buffer and oracle are read from the contract, amounts are bigint wei, claims include refunds (`claims.ts:50`) and the
+betting window runs on chain time. What the new brief adds — Postgres/Supabase, a Next.js dashboard, a separate worker,
+`round_pool_events` and `research_experiments` — is new work, not migration from these repositories.
