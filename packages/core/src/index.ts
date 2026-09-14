@@ -1,6 +1,7 @@
 export * from './units.js';
 export * from './round.js';
 export * from './sequence.js';
+export * from './statistics.js';
 export * from './trade.js';
 export * from './risk.js';
 export * from './portfolio.js';
