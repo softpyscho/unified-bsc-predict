@@ -138,6 +138,8 @@ export class BacktestService {
       : {
           ...config.risk,
           maxStakeWei: bnbToWei(req.startingBankrollBnb),
+          minStakeWei: 0n,
+          escalationStakeWei: 0n,
           maxBankrollFraction: 1,
           maxDailyLossWei: 0n,
           maxConsecutiveLosses: 0,

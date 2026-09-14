@@ -460,6 +460,9 @@ type RecoveryParams = {
   ladderStep2: number;
   ladderStep3: number;
   ladderStep4: number;
+  ladderStep5: number;
+  ladderStep6: number;
+  stakeUnit: string;
   maxRecoverySteps: number;
   sizingMode: string;
   targetProfitPercent: number;
@@ -539,7 +542,8 @@ export const sequenceRecovery: StrategyPlugin<RecoveryParams> = {
   name: 'Sequence recovery ladder',
   version: '1.0.0',
   description:
-    'Configurable N-step recovery ladder (default 1%/3%/6%/10% of bankroll). After a loss it waits for a ' +
+    'Configurable recovery ladder of up to 6 steps, in % of bankroll (default 1%/3%/6%/10%) or fixed BNB ' +
+    'amounts. After a loss it waits for a ' +
     'confirmed reversal — not an immediate double-up — before re-entering, with the confirmation rule and ' +
     "ladder fully configurable. State is derived from this strategy's own trade history, so it survives a " +
     'restart with no separate state table. Demonstration strategy: backtest thoroughly before considering live.',
@@ -575,47 +579,27 @@ export const sequenceRecovery: StrategyPlugin<RecoveryParams> = {
       description: 'Bet with the confirmed new direction, or fade back to the original.',
     },
     {
-      key: 'ladderStep1',
-      label: 'Attempt 1 (% of bankroll)',
-      type: 'number',
-      min: 0.01,
-      max: 50,
-      step: 0.01,
-      description: '',
+      key: 'stakeUnit',
+      label: 'Ladder unit',
+      type: 'enum',
+      options: ['PERCENT_OF_BANKROLL', 'BNB'],
+      description: 'Whether the attempt stakes below are % of bankroll or fixed BNB amounts.',
     },
-    {
-      key: 'ladderStep2',
-      label: 'Attempt 2 (% of bankroll)',
-      type: 'number',
-      min: 0.01,
+    ...[1, 2, 3, 4, 5, 6].map((n) => ({
+      key: `ladderStep${n}`,
+      label: `Attempt ${n} stake`,
+      type: 'number' as const,
+      min: 0.001,
       max: 50,
-      step: 0.01,
-      description: '',
-    },
-    {
-      key: 'ladderStep3',
-      label: 'Attempt 3 (% of bankroll)',
-      type: 'number',
-      min: 0.01,
-      max: 50,
-      step: 0.01,
-      description: '',
-    },
-    {
-      key: 'ladderStep4',
-      label: 'Attempt 4 (% of bankroll)',
-      type: 'number',
-      min: 0.01,
-      max: 50,
-      step: 0.01,
-      description: '',
-    },
+      step: 0.001,
+      description: n === 1 ? 'In the ladder unit above.' : `Used after ${n - 1} consecutive losses.`,
+    })),
     {
       key: 'maxRecoverySteps',
       label: 'Max recovery steps',
       type: 'integer',
       min: 1,
-      max: 4,
+      max: 6,
       description: 'How many ladder steps are actually used.',
     },
     {
@@ -653,6 +637,9 @@ export const sequenceRecovery: StrategyPlugin<RecoveryParams> = {
     ladderStep2: 3,
     ladderStep3: 6,
     ladderStep4: 10,
+    ladderStep5: 15,
+    ladderStep6: 20,
+    stakeUnit: 'PERCENT_OF_BANKROLL',
     maxRecoverySteps: 4,
     sizingMode: 'FIXED_PERCENTAGE',
     targetProfitPercent: 1,
@@ -660,8 +647,8 @@ export const sequenceRecovery: StrategyPlugin<RecoveryParams> = {
   },
   lookback: (p) => Math.max(100, p.requiredPreviousStreak + p.confirmationCount + 20),
   evaluate(ctx, p) {
-    const ladder = [p.ladderStep1, p.ladderStep2, p.ladderStep3, p.ladderStep4];
-    const maxSteps = Math.max(1, Math.min(4, Math.floor(p.maxRecoverySteps)));
+    const ladder = [p.ladderStep1, p.ladderStep2, p.ladderStep3, p.ladderStep4, p.ladderStep5, p.ladderStep6];
+    const maxSteps = Math.max(1, Math.min(ladder.length, Math.floor(p.maxRecoverySteps)));
     const { directions: seq } = seqOf(ctx);
     const ended = seq; // toSequence already dropped ties/cancellations
     const status = recoveryStatus(ctx.ownTrades);
@@ -673,16 +660,18 @@ export const sequenceRecovery: StrategyPlugin<RecoveryParams> = {
       depth: number,
       priorLossesBnb: number,
     ): { stakeBnb: number; sizingNote: string } => {
-      const ladderPct = ladder[Math.min(depth, 3)]!;
-      const fixed = ctx.bankrollBnb * (ladderPct / 100);
+      const step = ladder[Math.min(depth, maxSteps - 1)]!;
+      const inBnb = p.stakeUnit === 'BNB';
+      const fixed = inBnb ? step : ctx.bankrollBnb * (step / 100);
+      const stepNote = `ladder step ${depth + 1}: ${inBnb ? `${step} BNB` : `${step}% of bankroll`}`;
       if (p.sizingMode !== 'TARGET_RECOVERY' || depth === 0) {
-        return { stakeBnb: fixed, sizingNote: `${ladderPct}% of bankroll (FIXED_PERCENTAGE)` };
+        return { stakeBnb: fixed, sizingNote: stepNote };
       }
       const target = targetRecoveryStakeBnb(ctx, direction, priorLossesBnb, p.targetProfitPercent);
       if (target === null)
         return {
           stakeBnb: fixed,
-          sizingNote: `${ladderPct}% of bankroll (TARGET_RECOVERY unavailable: no live pool reading, e.g. backtest)`,
+          sizingNote: `${stepNote} (TARGET_RECOVERY unavailable: no live pool reading, e.g. backtest)`,
         };
       return {
         stakeBnb: target,

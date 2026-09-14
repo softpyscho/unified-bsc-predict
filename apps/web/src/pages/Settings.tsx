@@ -39,6 +39,9 @@ interface Settings {
 
 const RISK_LABELS: Record<string, string> = {
   maxBetSize: 'Max bet size (BNB)',
+  minBetSize: 'Min bet size (BNB)',
+  escalationStakeThreshold: 'Escalation threshold (BNB)',
+  escalationMinLossStreak: 'Consecutive losses to unlock escalation',
   maxBankrollFraction: 'Max bankroll fraction per trade',
   maxDailyLoss: 'Max daily loss (BNB)',
   maxConsecutiveLosses: 'Max consecutive losses',

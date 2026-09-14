@@ -100,8 +100,8 @@ data" and `SKIP`, distinct from "measured, but the edge/sample-size threshold wa
 
 ## Sequence recovery ladder
 
-`sequence-recovery` is the configurable N-step recovery ladder (default 1%/3%/6%/10% of bankroll,
-`ladderStep1..4`). It deliberately does **not** double the stake immediately after a loss — see the plugin's own
+`sequence-recovery` is the configurable recovery ladder of up to 6 steps (`ladderStep1..6`, `maxRecoverySteps`),
+in % of bankroll (default 1%/3%/6%/10%) or fixed BNB amounts (`stakeUnit: BNB`). It deliberately does **not** double the stake immediately after a loss — see the plugin's own
 warning in `sequenceStrategies.ts`. Its pipeline, each step re-derived from `ctx.ownTrades` on every call:
 
 1. **No active sequence** (`status.depth === 0`) → a fresh attempt 1, direction chosen by `initialDirection`
@@ -166,8 +166,9 @@ next poll until `minSecondsBeforeLock`, after which the round is recorded as `EN
 
 Gates (`BOT_RUNNING`, `STRATEGY_ENABLED`, `MARKET_ACTIVE`, plus `PAPER_TRADING_ENABLED`/`STRATEGY_PAPER_ENABLED` or
 the live gate `LIVE_TRADING_ENABLED`, `LIVE_ARMED`, `WALLET_VALID`, `STRATEGY_LIVE_ENABLED`, `CIRCUIT_BREAKER`),
-then `ROUND_VALID`, `SINGLE_BET_PER_ROUND`, `MIN_CONFIDENCE`, `MIN_EXPECTED_EDGE`, `STAKE_CAP` (clamps),
-`MIN_BET`, `MAX_DAILY_LOSS`, `STOP_LOSS`, `CONSECUTIVE_LOSSES`, `MAX_EXPOSURE`, `SUFFICIENT_BALANCE`,
+then `ROUND_VALID`, `SINGLE_BET_PER_ROUND`, `MIN_CONFIDENCE`, `MIN_EXPECTED_EDGE`, `ESCALATION_GATE` (clamps stakes above `ESCALATION_STAKE_THRESHOLD` until the strategy has
+`ESCALATION_MIN_LOSS_STREAK` consecutive losses), `STAKE_CAP` (clamps), `MIN_STAKE` (raises stakes to `MIN_BET_SIZE`;
+rejects if the caps leave less), `MIN_BET`, `MAX_DAILY_LOSS`, `STOP_LOSS`, `CONSECUTIVE_LOSSES`, `MAX_EXPOSURE`, `SUFFICIENT_BALANCE`,
 `MIN_WALLET_BALANCE`, `MAX_GAS_PRICE`. All rules are evaluated (no short-circuit) so the dashboard can show every
 reason; the first failure becomes the decision's `reason`.
 

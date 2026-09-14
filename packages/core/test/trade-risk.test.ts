@@ -93,7 +93,9 @@ describe('risk engine', () => {
       'SINGLE_BET_PER_ROUND',
       'MIN_CONFIDENCE',
       'MIN_EXPECTED_EDGE',
+      'ESCALATION_GATE',
       'STAKE_CAP',
+      'MIN_STAKE',
       'MIN_BET',
       'MAX_DAILY_LOSS',
       'STOP_LOSS',
@@ -116,6 +118,37 @@ describe('risk engine', () => {
   it('rejects when the clamped stake falls below the contract minimum', () => {
     const r = risk({ limits: { ...LOOSE_LIMITS, maxBankrollFraction: 0.0005 } });
     expect(failed(r)).toEqual(['MIN_BET']);
+  });
+
+  it('raises a stake below the minimum stake floor', () => {
+    const r = risk({
+      stakeWei: bnbToWei('0.001'),
+      limits: { ...LOOSE_LIMITS, minStakeWei: bnbToWei('0.01') },
+    });
+    expect(r.approved).toBe(true);
+    expect(r.stakeWei).toBe(bnbToWei('0.01'));
+  });
+
+  it('rejects when the caps leave less than the minimum stake', () => {
+    const r = risk({
+      limits: { ...LOOSE_LIMITS, minStakeWei: bnbToWei('0.01'), maxStakeWei: bnbToWei('0.005') },
+    });
+    expect(failed(r)).toEqual(['MIN_STAKE']);
+  });
+
+  it('only allows stakes above the escalation threshold after enough consecutive losses', () => {
+    const limits = {
+      ...LOOSE_LIMITS,
+      escalationStakeWei: bnbToWei('0.16'),
+      escalationMinLossStreak: 5,
+    };
+    const locked = risk({ stakeWei: bnbToWei('0.3'), limits, state: { lossStreak: 4 } });
+    expect(locked.approved).toBe(true);
+    expect(locked.stakeWei).toBe(bnbToWei('0.16'));
+    const unlocked = risk({ stakeWei: bnbToWei('0.3'), limits, state: { lossStreak: 5 } });
+    expect(unlocked.stakeWei).toBe(bnbToWei('0.3'));
+    const small = risk({ stakeWei: bnbToWei('0.04'), limits, state: { lossStreak: 0 } });
+    expect(small.stakeWei).toBe(bnbToWei('0.04'));
   });
 
   it.each([

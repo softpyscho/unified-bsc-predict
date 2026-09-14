@@ -276,4 +276,34 @@ describe('sequence-recovery', () => {
     const expected = 0.04 / (payout - 1);
     expect(sig.stakeBnb).toBeCloseTo(expected, 1);
   });
+
+  it('a 6-step BNB ladder only reaches its largest step after 5 consecutive losses', () => {
+    // Five losses, each on the side the round went against; the fifth (epoch 105) went BEAR.
+    const trades = [
+      own(E(5), 'BULL', 'LOST'),
+      own(E(4), 'BEAR', 'LOST'),
+      own(E(3), 'BULL', 'LOST'),
+      own(E(2), 'BEAR', 'LOST'),
+      own(E(1), 'BULL', 'LOST'),
+    ];
+    const outcomes: RoundOutcome[] = ['BULL', 'BEAR', 'BULL', 'BEAR', 'BULL', 'BEAR', 'BULL', 'BULL'];
+    const bnbLadder = {
+      ...base,
+      stakeUnit: 'BNB',
+      ladderStep1: 0.01,
+      ladderStep2: 0.02,
+      ladderStep3: 0.04,
+      ladderStep4: 0.08,
+      ladderStep5: 0.16,
+      ladderStep6: 0.3,
+      maxRecoverySteps: 6,
+    };
+    const sig = p.evaluate(contextAt(outcomes, 7, trades), bnbLadder);
+    expect(sig.action).toBe('BUY_DOWN');
+    expect(sig.stakeBnb).toBe(0.3);
+    expect(sig.indicators?.recoveryStep).toBe(6);
+
+    const fresh = p.evaluate(contextAt(outcomes, 7, []), bnbLadder);
+    expect(fresh.stakeBnb).toBe(0.01);
+  });
 });

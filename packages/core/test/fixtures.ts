@@ -53,6 +53,9 @@ export function series(
 
 export const LOOSE_LIMITS: RiskLimits = {
   maxStakeWei: bnbToWei(100),
+  minStakeWei: 0n,
+  escalationStakeWei: 0n,
+  escalationMinLossStreak: 0,
   maxBankrollFraction: 1,
   maxDailyLossWei: 0n,
   maxConsecutiveLosses: 0,

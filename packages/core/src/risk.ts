@@ -8,6 +8,14 @@ import { minBigInt, mulWeiByFraction, weiToBnbString } from './units.js';
 
 export interface RiskLimits {
   maxStakeWei: bigint;
+  /** Every stake is raised to at least this (then still subject to every cap). 0 disables. */
+  minStakeWei: bigint;
+  /**
+   * Stakes above this are only allowed once the strategy has `escalationMinLossStreak` consecutive losses;
+   * until then they are clamped to it. 0 disables.
+   */
+  escalationStakeWei: bigint;
+  escalationMinLossStreak: number;
   maxBankrollFraction: number;
   /** Reject new trades once today's (UTC) realized net P&L is at or below −maxDailyLoss. 0 disables. */
   maxDailyLossWei: bigint;
@@ -45,6 +53,9 @@ export function mergeLimits(global: RiskLimits, overrides: Partial<RiskLimits>):
       overrides.maxStakeWei === undefined
         ? global.maxStakeWei
         : minBigInt(global.maxStakeWei, overrides.maxStakeWei),
+    minStakeWei: global.minStakeWei,
+    escalationStakeWei: minPositiveWei(global.escalationStakeWei, overrides.escalationStakeWei),
+    escalationMinLossStreak: Math.max(global.escalationMinLossStreak, overrides.escalationMinLossStreak ?? 0),
     maxBankrollFraction: Math.min(global.maxBankrollFraction, overrides.maxBankrollFraction ?? Infinity),
     maxDailyLossWei: minPositiveWei(global.maxDailyLossWei, overrides.maxDailyLossWei),
     maxConsecutiveLosses: minPositive(global.maxConsecutiveLosses, overrides.maxConsecutiveLosses),
@@ -154,13 +165,38 @@ export function evaluateRisk(input: RiskInput): RiskResult {
   }
 
   const fractionCap = mulWeiByFraction(state.bankrollWei, limits.maxBankrollFraction);
-  const stake = minBigInt(input.stakeWei, limits.maxStakeWei, fractionCap);
+  const floored =
+    limits.minStakeWei > 0n && input.stakeWei < limits.minStakeWei ? limits.minStakeWei : input.stakeWei;
+  const escalationLocked =
+    limits.escalationStakeWei > 0n && state.lossStreak < limits.escalationMinLossStreak;
+  const gated = escalationLocked && floored > limits.escalationStakeWei ? limits.escalationStakeWei : floored;
+  const stake = minBigInt(gated, limits.maxStakeWei, fractionCap);
+  add(
+    'ESCALATION_GATE',
+    true,
+    limits.escalationStakeWei === 0n
+      ? 'disabled'
+      : gated < floored
+        ? `stake clamped ${bnb(floored)} → ${bnb(gated)}: stakes above ${bnb(limits.escalationStakeWei)} need ${limits.escalationMinLossStreak} consecutive losses (have ${state.lossStreak})`
+        : `${state.lossStreak}/${limits.escalationMinLossStreak} consecutive losses; stakes above ${bnb(limits.escalationStakeWei)} ${escalationLocked ? 'locked' : 'unlocked'}`,
+  );
   add(
     'STAKE_CAP',
     true,
-    stake < input.stakeWei
-      ? `stake clamped ${bnb(input.stakeWei)} → ${bnb(stake)} (max ${bnb(limits.maxStakeWei)}, ${limits.maxBankrollFraction * 100}% of bankroll = ${bnb(fractionCap)})`
+    stake < gated
+      ? `stake clamped ${bnb(gated)} → ${bnb(stake)} (max ${bnb(limits.maxStakeWei)}, ${limits.maxBankrollFraction * 100}% of bankroll = ${bnb(fractionCap)})`
       : `stake ${bnb(stake)} within caps`,
+  );
+  add(
+    'MIN_STAKE',
+    stake >= limits.minStakeWei,
+    limits.minStakeWei === 0n
+      ? 'disabled'
+      : stake < limits.minStakeWei
+        ? `caps leave ${bnb(stake)}, below the ${bnb(limits.minStakeWei)} minimum stake`
+        : floored > input.stakeWei
+          ? `stake raised ${bnb(input.stakeWei)} → ${bnb(floored)} (minimum ${bnb(limits.minStakeWei)})`
+          : `stake at or above the ${bnb(limits.minStakeWei)} minimum`,
   );
   add(
     'MIN_BET',

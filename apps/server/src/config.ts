@@ -72,6 +72,9 @@ const schema = z.object({
   PAPER_STARTING_BANKROLL: bnb.default(bnbToWei('1')),
   DEFAULT_BET_SIZE: bnb.default(bnbToWei('0.001')),
   MAX_BET_SIZE: bnb.default(bnbToWei('0.01')),
+  MIN_BET_SIZE: bnb.default(0n),
+  ESCALATION_STAKE_THRESHOLD: bnb.default(0n),
+  ESCALATION_MIN_LOSS_STREAK: int(0, 1000).default(0),
   MAX_BANKROLL_FRACTION: num(0, 1).default(0.05),
   MAX_DAILY_LOSS: bnb.default(bnbToWei('0.05')),
   MAX_CONSECUTIVE_LOSSES: int(0, 1000).default(5),
@@ -163,6 +166,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (e.LIVE_TRADING_ENABLED && !privateKey) issues.push('LIVE_TRADING_ENABLED=true requires PRIVATE_KEY');
   if (e.MAX_BET_SIZE > e.MAX_TOTAL_EXPOSURE) issues.push('MAX_BET_SIZE must not exceed MAX_TOTAL_EXPOSURE');
   if (e.DEFAULT_BET_SIZE > e.MAX_BET_SIZE) issues.push('DEFAULT_BET_SIZE must not exceed MAX_BET_SIZE');
+  if (e.MIN_BET_SIZE > e.MAX_BET_SIZE) issues.push('MIN_BET_SIZE must not exceed MAX_BET_SIZE');
+  if (e.ESCALATION_STAKE_THRESHOLD > 0n) {
+    if (e.ESCALATION_STAKE_THRESHOLD < e.MIN_BET_SIZE)
+      issues.push('ESCALATION_STAKE_THRESHOLD must not be below MIN_BET_SIZE');
+    if (e.ESCALATION_MIN_LOSS_STREAK < 1)
+      issues.push('ESCALATION_STAKE_THRESHOLD requires ESCALATION_MIN_LOSS_STREAK >= 1');
+  }
   if (e.ADMIN_API_TOKEN.toLowerCase().includes('replace'))
     issues.push('ADMIN_API_TOKEN: replace the placeholder value');
   if (issues.length > 0) throw new ConfigError(issues);
@@ -191,6 +201,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     defaultBetWei: e.DEFAULT_BET_SIZE,
     risk: {
       maxStakeWei: e.MAX_BET_SIZE,
+      minStakeWei: e.MIN_BET_SIZE,
+      escalationStakeWei: e.ESCALATION_STAKE_THRESHOLD,
+      escalationMinLossStreak: e.ESCALATION_MIN_LOSS_STREAK,
       maxBankrollFraction: e.MAX_BANKROLL_FRACTION,
       maxDailyLossWei: e.MAX_DAILY_LOSS,
       maxConsecutiveLosses: e.MAX_CONSECUTIVE_LOSSES,
@@ -245,6 +258,9 @@ export function publicConfig(c: AppConfig) {
     defaultBetSize: w(c.defaultBetWei),
     risk: {
       maxBetSize: w(c.risk.maxStakeWei),
+      minBetSize: w(c.risk.minStakeWei),
+      escalationStakeThreshold: w(c.risk.escalationStakeWei),
+      escalationMinLossStreak: c.risk.escalationMinLossStreak,
       maxBankrollFraction: c.risk.maxBankrollFraction,
       maxDailyLoss: w(c.risk.maxDailyLossWei),
       maxConsecutiveLosses: c.risk.maxConsecutiveLosses,
