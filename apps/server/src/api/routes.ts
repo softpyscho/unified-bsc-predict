@@ -91,6 +91,11 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
 
   server.get('/api/health', async () => {
     const state = app.monitor.state;
+    // Freshness only: collector errors can contain RPC URLs, which may embed API keys.
+    const poolSync = config.poolEvents.enabled
+      ? await repos.poolEvents.sync(tradable().id).catch(() => null)
+      : null;
+    const poolAge = poolSync ? Math.round((Date.now() - Date.parse(poolSync.updatedAt)) / 1000) : null;
     let db = 'ok';
     let bot: { status: string; phase: string } = { status: 'UNKNOWN', phase: app.bot.phase };
     try {
@@ -115,6 +120,15 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       },
       bot,
       workerLoops: app.worker.loopsRunning,
+      poolEvents: {
+        enabled: config.poolEvents.enabled,
+        ok:
+          !config.poolEvents.enabled ||
+          (poolSync !== null && poolSync.forwardFailures === 0 && poolAge !== null && poolAge < 120),
+        lastRunAgeSeconds: poolAge,
+        collectedToBlock: poolSync?.toBlock ?? null,
+        backfillDone: poolSync?.backfillDone ?? null,
+      },
     };
   });
 
@@ -294,6 +308,22 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
   });
 
   server.get('/api/pool-events', async () => app.poolEvents.status());
+
+  // ------------------------------------------------------------------------------------------------ research
+
+  server.get('/api/research/experiments', async () => app.research.list());
+  server.get('/api/research/experiments/:id', async (req) => {
+    const { id } = idParam.parse(req.params);
+    const view = await app.research.view(id);
+    if (!view) throw new HttpError(404, 'experiment not found');
+    return view;
+  });
+  server.post('/api/research/experiments', async (req, reply) => {
+    const exp = await app.research.register(req.body);
+    app.research.runInBackground(exp.id);
+    return reply.code(202).send({ id: exp.id });
+  });
+  server.get('/api/research/ledger', async () => app.research.ledger());
 
   // ------------------------------------------------------------------------------------------------ trades & decisions
 

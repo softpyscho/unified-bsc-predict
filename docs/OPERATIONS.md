@@ -97,6 +97,37 @@ npm run app -- pool-events reset-backfill
 
 `GET /api/pool-events` returns the same status, and `GET /api/rounds/:epoch` includes the round's events.
 
+## Research experiments
+
+Research questions run as **pre-registered experiments** (`research_experiments`). Registering resolves and freezes
+the specification: families (`baseline`, `sequence`, `hour`, `pool`), epoch window, chronological train share,
+decision offsets, stake, gas and FDR level. A database trigger rejects any later change to it, results are immutable
+once the run finishes, and running again means registering a new experiment. "No edge found" is stored like any
+other verdict.
+
+- Hypotheses are formed on the training share and each derived rule is scored only on the later, held-out rounds,
+  with the fee, own-stake dilution and gas charged. A rule is an **edge candidate** only if its held-out net return
+  is significantly positive after Benjamini–Hochberg correction across every rule in the experiment; an interval
+  above zero on its own is not enough, because searching more rules would eventually produce one by chance.
+- Every hypothesis tested goes into the append-only `research_tests` ledger. `research ledger` (and
+  `GET /api/research/ledger`) re-applies the correction across all tests ever run, so re-running variations makes
+  the evidence bar stricter rather than easier.
+- The pool family uses only rounds whose events reconstruct the final pools exactly, and only bets in blocks strictly
+  before the decision second.
+- Studies run on a worker thread in the built server (`dist/researchWorker.js`), and data loads in pages, so a
+  multi-second study over the full history does not delay the trading loop. Tests and `tsx` development run inline.
+
+```bash
+npm run app -- research run --name "baseline + sequence, full history" --families baseline,sequence,hour
+npm run app -- research list
+npm run app -- research show 1
+npm run app -- research ledger
+```
+
+With embedded PGlite, stop the server before running CLI research, or use the API while it runs:
+`POST /api/research/experiments` with `{ "name": "…", "spec": { … } }` returns `202 { id }`, then poll
+`GET /api/research/experiments/:id`.
+
 ## Historical data
 
 ```bash

@@ -346,6 +346,82 @@ pool
     }),
   );
 
+const research = program
+  .command('research')
+  .description('pre-registered research experiments (stop the server first when using embedded PGlite)');
+research
+  .command('run')
+  .description('register an experiment with a fixed specification, run it, and print the verdict')
+  .requiredOption('--name <name>', 'experiment name')
+  .option('--description <text>', 'what the experiment tests and why')
+  .option('--families <list>', 'comma-separated: baseline,sequence,hour,pool')
+  .option('--from-epoch <epoch>', 'first epoch')
+  .option('--to-epoch <epoch>', 'last epoch')
+  .option('--train <fraction>', 'chronological share used to form hypotheses')
+  .option('--offsets <seconds>', 'decision offsets before lock, e.g. 30,10')
+  .option('--stake <bnb>', 'stake per simulated bet')
+  .action(
+    (o: {
+      name: string;
+      description?: string;
+      families?: string;
+      fromEpoch?: string;
+      toEpoch?: string;
+      train?: string;
+      offsets?: string;
+      stake?: string;
+    }) =>
+      withApp(async (app) => {
+        const list = (v: string) => v.split(',').map((s) => s.trim());
+        const exp = await app.research.register({
+          name: o.name,
+          description: o.description,
+          spec: {
+            ...(o.families ? { families: list(o.families) } : {}),
+            ...(o.fromEpoch ? { fromEpoch: Number(o.fromEpoch) } : {}),
+            ...(o.toEpoch ? { toEpoch: Number(o.toEpoch) } : {}),
+            ...(o.train ? { trainFraction: Number(o.train) } : {}),
+            ...(o.offsets ? { decisionOffsets: list(o.offsets).map(Number) } : {}),
+            ...(o.stake ? { stakeBnb: o.stake } : {}),
+          },
+        });
+        console.log(`registered experiment #${exp.id}; running…`);
+        const started = Date.now();
+        const v = await app.research.run(exp.id);
+        const r = v.result as { edges: { name: string }[]; breakEvenHitRate: number | null };
+        console.log(
+          `#${v.id} ${v.verdict} in ${((Date.now() - started) / 1000).toFixed(1)} s — ${stringify(v.dataSummary)}\n` +
+            `  hypotheses: ${v.survivors}/${v.hypothesesTested} survive BH in this experiment, ` +
+            `${v.globalSurvivors} across the whole ledger\n` +
+            `  rules: ${v.edges}/${v.rulesSearched} edge candidates${r.edges.length ? `: ${r.edges.map((e) => e.name).join('; ')}` : ''}\n` +
+            `  break-even hit rate: ${r.breakEvenHitRate === null ? '-' : (r.breakEvenHitRate * 100).toFixed(2) + '%'}`,
+        );
+      }),
+  );
+research.command('list').action(() =>
+  withApp(async (app) => {
+    for (const e of await app.research.list())
+      console.log(
+        `#${String(e.id).padStart(4)} ${e.status.padEnd(10)} ${String(e.verdict ?? '-').padEnd(14)} ` +
+          `${e.survivors ?? '-'}/${e.hypothesesTested ?? '-'} hyp  ${e.edges ?? '-'}/${e.rulesSearched ?? '-'} rules  ${e.name}`,
+      );
+  }),
+);
+research
+  .command('show <id>')
+  .description('full stored result of one experiment')
+  .action((id: string) =>
+    withApp(async (app) => {
+      const v = await app.research.view(Number(id));
+      if (!v) throw new Error(`experiment ${id} not found`);
+      print(v);
+    }),
+  );
+research
+  .command('ledger')
+  .description('hypotheses significant after correcting across every test ever run')
+  .action(() => withApp(async (app) => print(await app.research.ledger())));
+
 program
   .command('health')
   .description('check configuration, database and chain connectivity')

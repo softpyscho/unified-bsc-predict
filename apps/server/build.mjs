@@ -6,7 +6,8 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 const deps = Object.keys(pkg.dependencies ?? {}).filter((d) => !d.startsWith('@bsc/'));
 
 await build({
-  entryPoints: ['src/main.ts', 'src/cli.ts'],
+  // The research worker runs studies on a worker thread; research/runner.ts loads it from next to main.js.
+  entryPoints: { main: 'src/main.ts', cli: 'src/cli.ts', researchWorker: 'src/research/worker.ts' },
   outdir: 'dist',
   bundle: true,
   platform: 'node',

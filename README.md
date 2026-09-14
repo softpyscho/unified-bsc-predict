@@ -80,6 +80,9 @@ Arming is cleared on every restart unless `BOT_AUTO_RESUME_LIVE=true`. **Emergen
 ```bash
 npm run app -- migrate                       # schema + seed markets/strategies/wallet
 npm run app -- import-sqlite <file>          # one-time move of a pre-Postgres data/bsc-predict.db
+npm run app -- pool-events status|sync|reset-backfill   # per-bet pool event collection (research data)
+npm run app -- research run --name <n> [--families baseline,sequence,hour,pool] [--from-epoch n] [--to-epoch n]
+npm run app -- research list | show <id> | ledger    # pre-registered experiments and the all-time test ledger
 npm run app -- import-history [--format v2|v1|prdt] [--file path | --url url] [--all]
 npm run app -- sync-history [--from epoch]   # initial / catch-up sync from chain
 npm run app -- sync-current                  # incremental sync

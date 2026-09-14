@@ -389,6 +389,68 @@ CREATE TABLE pool_event_gaps (
 );
 `,
   },
+  {
+    id: 3,
+    name: 'research experiments',
+    sql: `
+-- A research experiment is pre-registered: its specification (families, data window, split, costs) is fixed when
+-- it is registered, and its results are immutable once it finishes. Running again means registering again.
+CREATE TABLE research_experiments (
+  id ${ID},
+  name TEXT NOT NULL,
+  description TEXT,
+  spec TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('REGISTERED','RUNNING','DONE','FAILED')),
+  verdict TEXT CHECK (verdict IN ('NO_EDGE','EDGE_CANDIDATE')),
+  hypotheses_tested INTEGER,
+  survivors INTEGER,
+  rules_searched INTEGER,
+  edges INTEGER,
+  data_summary TEXT,
+  result TEXT,
+  error TEXT,
+  code_version TEXT NOT NULL,
+  registered_at TEXT NOT NULL DEFAULT ${NOW},
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE FUNCTION research_experiment_guard() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'research_experiments is append-only';
+  END IF;
+  IF NEW.spec IS DISTINCT FROM OLD.spec OR NEW.name IS DISTINCT FROM OLD.name
+     OR NEW.code_version IS DISTINCT FROM OLD.code_version OR NEW.registered_at IS DISTINCT FROM OLD.registered_at THEN
+    RAISE EXCEPTION 'a registered experiment''s specification cannot change';
+  END IF;
+  IF OLD.status IN ('DONE','FAILED') THEN
+    RAISE EXCEPTION 'finished experiment results are immutable';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+CREATE TRIGGER research_experiments_guard BEFORE UPDATE OR DELETE ON research_experiments
+  FOR EACH ROW EXECUTE FUNCTION research_experiment_guard();
+
+-- Every hypothesis ever tested, across all experiments: the ledger for correcting over everything tried.
+CREATE TABLE research_tests (
+  id ${ID},
+  experiment_id BIGINT NOT NULL REFERENCES research_experiments(id),
+  hypothesis_id TEXT NOT NULL,
+  family TEXT NOT NULL,
+  label TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  estimate DOUBLE PRECISION NOT NULL,
+  baseline DOUBLE PRECISION NOT NULL,
+  p_raw DOUBLE PRECISION NOT NULL,
+  p_adj_experiment DOUBLE PRECISION NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ${NOW},
+  UNIQUE (experiment_id, hypothesis_id)
+);
+CREATE TRIGGER research_tests_append_only BEFORE UPDATE OR DELETE ON research_tests
+  FOR EACH ROW EXECUTE FUNCTION reject_mutation();
+`,
+  },
 ];
 
 /** Applies pending migrations in one transaction under an advisory lock, so concurrent processes cannot race. */

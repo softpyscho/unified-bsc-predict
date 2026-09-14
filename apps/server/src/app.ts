@@ -22,6 +22,7 @@ import { MarketService } from './services/markets.js';
 import { PoolEventCollector } from './services/poolEvents.js';
 import { PortfolioService } from './services/portfolio.js';
 import { RecoveryService } from './services/recovery.js';
+import { ResearchService } from './services/research.js';
 import { RiskStateBuilder } from './services/riskState.js';
 import { RoundMonitor } from './services/roundMonitor.js';
 import { SettlementService } from './services/settlement.js';
@@ -85,6 +86,8 @@ export async function createApp(config: AppConfig, deps: AppDeps = {}) {
   const backtests = new BacktestService(ctx, markets);
   const csv = new CsvImporter(ctx);
   const poolEvents = new PoolEventCollector(ctx, markets);
+  const research = new ResearchService(ctx, markets);
+  await research.failInterrupted();
   const recovery = new RecoveryService(ctx, {
     bot,
     markets,
@@ -131,11 +134,13 @@ export async function createApp(config: AppConfig, deps: AppDeps = {}) {
     backtests,
     csv,
     poolEvents,
+    research,
     recovery,
     worker,
     async close(): Promise<void> {
       await worker.stop();
       await backtests.shutdown();
+      await research.shutdown();
       await db.close();
       log.close();
     },
