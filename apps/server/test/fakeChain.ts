@@ -4,7 +4,7 @@
  * the bettable window, one bet per round, claims/refunds, gas, and injectable RPC/broadcast failures.
  */
 import type { Direction, RoundRecord } from '@bsc/core';
-import { keccak256, stringToHex } from 'viem';
+import { isAddress, keccak256, stringToHex } from 'viem';
 import type {
   Address,
   BetEvent,
@@ -372,6 +372,8 @@ export class FakeChain implements PredictionReader {
   }
 
   async simulateBet(_direction: Direction, epoch: number, value: bigint, from: Address): Promise<void> {
+    // viem rejects malformed or wrongly checksummed addresses before sending the call; so does the simulation.
+    if (!isAddress(from, { strict: true })) throw new Error(`Address "${from}" is invalid.`);
     if (this.simulateFailures > 0) {
       this.simulateFailures--;
       throw new Error('fetch failed');

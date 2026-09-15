@@ -1,5 +1,8 @@
+import { isAddress } from 'viem';
 import { describe, expect, it } from 'vitest';
 import { buildServer } from '../src/api/server.js';
+import { classifyError } from '../src/chain/types.js';
+import { SHADOW_ADDRESS } from '../src/services/execution.js';
 import type { Harness } from './harness.js';
 import { bearer, makeHarness, playRound, tick } from './harness.js';
 
@@ -11,6 +14,22 @@ async function paperStrategy(h: Harness) {
 }
 
 describe('shadow checks of paper trades', () => {
+  it('simulates from an address viem accepts (strict checksum rules)', () => {
+    // A mixed-case literal with a wrong checksum passed every simulated test but failed every real eth_call.
+    expect(isAddress(SHADOW_ADDRESS, { strict: true })).toBe(true);
+  });
+
+  it('extracts the contract’s reason from a real eth_call revert, without the raw revert data', () => {
+    // Message shape observed from viem against the BSC contract.
+    const err = new Error(
+      'Execution reverted with reason: Bet is too early/late: 0x08c379a0000000000000000000000000000000000000000000000000000000000000002000.\n\nRaw Call Arguments:\n  from: 0x5ad0…',
+    );
+    expect(classifyError(err)).toMatchObject({
+      errorClass: 'CONTRACT_REVERT',
+      message: 'contract reverted: Bet is too early/late',
+    });
+  });
+
   it('simulates every paper fill as a live bet and records the verdict (never broadcasting)', async () => {
     const h = await makeHarness();
     await paperStrategy(h);

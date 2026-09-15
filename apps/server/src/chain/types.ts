@@ -161,6 +161,8 @@ export function classifyError(err: unknown): ExecutionError {
     const full = err instanceof Error ? err.message : String(err);
     const reason =
       /following reason:\s*\n\s*([^\n]+)/i.exec(full)?.[1] ??
+      // eth_call reverts: 'Execution reverted with reason: <reason>: 0x08c379a0…' (drop the raw revert data).
+      /reverted with reason:\s*([^\n]+?)(?::\s*0x[0-9a-f]*)?\.?\s*$/im.exec(full)?.[1] ??
       /reverted with reason string\s*["']([^"']+)/i.exec(full)?.[1] ??
       /execution reverted:?\s*([^\n]*)/i.exec(full)?.[1];
     return new ExecutionError(

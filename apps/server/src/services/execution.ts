@@ -20,7 +20,7 @@ import { BET_GAS_ESTIMATE } from './riskState.js';
 
 export const RECEIPT_TIMEOUT_MS = 60_000;
 /** Sender for shadow simulations when no wallet is configured (no code, no bets; its balance is overridden). */
-export const SHADOW_ADDRESS: Address = '0x5AD0000000000000000000000000000000005aD0';
+export const SHADOW_ADDRESS: Address = '0x5ad0000000000000000000000000000000005ad0';
 
 interface PreflightRejection {
   errorClass: string;
