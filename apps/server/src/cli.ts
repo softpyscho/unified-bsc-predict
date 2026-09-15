@@ -250,6 +250,13 @@ program
   .requiredOption('--to <date>', 'ISO date or unix seconds')
   .option('--bankroll <bnb>', 'starting bankroll', '1')
   .option('--no-global-limits', 'do not apply the environment risk limits')
+  .option(
+    '--walk-forward <train:test[:step]>',
+    'tune on rolling training windows and score each choice on the next, unseen window (in rounds), e.g. 20000:5000',
+  )
+  .option('--grid <json>', 'walk-forward parameter grid, e.g. \'{"streak":[2,3,4,5]}\'')
+  .option('--anchored', 'walk-forward with an expanding training window')
+  .option('--objective <objective>', 'walk-forward selection objective: netPnl | roi', 'netPnl')
   .option('--json', 'print the full result as JSON')
   .action(
     (o: {
@@ -258,6 +265,10 @@ program
       to: string;
       bankroll: string;
       globalLimits: boolean;
+      walkForward?: string;
+      grid?: string;
+      anchored?: boolean;
+      objective: string;
       json?: boolean;
     }) =>
       withApp(async (app) => {
@@ -267,12 +278,25 @@ program
           if (!s) throw new Error(`unknown strategy ${slug}`);
           strategies.push({ strategyId: s.id });
         }
+        let walkForward: Record<string, unknown> | undefined;
+        if (o.walkForward) {
+          const [train, test, step] = o.walkForward.split(':').map(Number);
+          walkForward = {
+            trainRounds: train,
+            testRounds: test,
+            ...(step ? { stepRounds: step } : {}),
+            anchored: Boolean(o.anchored),
+            objective: o.objective,
+            grid: o.grid ? (JSON.parse(o.grid) as unknown) : {},
+          };
+        }
         const id = await app.backtests.start({
           from: parseDate(o.from),
           to: parseDate(o.to),
           startingBankrollBnb: Number(o.bankroll),
           applyGlobalLimits: o.globalLimits,
           strategies,
+          ...(walkForward ? { walkForward } : {}),
         });
         let run = (await app.repos.backtests.get(id))!;
         while (run.status === 'RUNNING') {
@@ -286,8 +310,29 @@ program
         const result = run.result as {
           rounds: number;
           results: { key: string; summary: Record<string, unknown>; decisions: Record<string, unknown> }[];
+          walkForward?: {
+            selectionStability: number | null;
+            folds: {
+              index: number;
+              testFromEpoch: number;
+              testToEpoch: number;
+              chosen: Record<string, unknown>;
+              test: { netPnl: string; settledTrades: number };
+            }[];
+          };
         };
         console.log(`rounds replayed: ${result.rounds}`);
+        if (result.walkForward) {
+          for (const f of result.walkForward.folds)
+            console.log(
+              `  fold ${String(f.index + 1).padStart(3)}  test ${f.testFromEpoch}-${f.testToEpoch}  chose ${JSON.stringify(f.chosen)}  ` +
+                `trades=${f.test.settledTrades} net=${weiToBnbString(BigInt(f.test.netPnl), 6)} BNB`,
+            );
+          const st = result.walkForward.selectionStability;
+          console.log(
+            `  selection stability: ${st === null ? '-' : (st * 100).toFixed(0) + '%'} of folds kept the previous choice`,
+          );
+        }
         for (const r of result.results) {
           const s = r.summary as Record<string, string | number | null>;
           console.log(

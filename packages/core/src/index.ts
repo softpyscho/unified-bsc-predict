@@ -8,6 +8,7 @@ export * from './trade.js';
 export * from './risk.js';
 export * from './portfolio.js';
 export * from './backtest.js';
+export * from './walkForward.js';
 export * from './strategy/params.js';
 export * from './strategy/types.js';
 export * from './strategy/config.js';

@@ -90,6 +90,7 @@ npm run app -- reconcile                     # repair + verify stored rounds, pe
 npm run app -- bot status|start|stop|pause|resume|emergency-stop|reset --yes
 npm run app -- strategy list|enable <slug> [--live]|disable <slug>
 npm run app -- backtest --strategy follow-last-winner,momentum --from 2026-08-01 --to 2026-09-01 [--bankroll 1]
+npm run app -- backtest --strategy streak-reversal --from 2025-01-01 --to 2026-09-01 --walk-forward 20000:5000 --grid '{"streak":[2,3,4,5]}'
 npm run app -- wallet add <address> | wallet sync
 npm run app -- health
 npm run app -- verify-chain                  # read-only check of every contract call + dry-run bet (never broadcasts)

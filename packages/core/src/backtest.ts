@@ -38,6 +38,8 @@ export interface BacktestOptions {
   minBetWei: bigint;
   bufferSeconds: number;
   globalLimits: RiskLimits;
+  /** Rounds before this epoch are history only (warm-up, e.g. for walk-forward folds): no decisions are taken. */
+  tradeFromEpoch?: number;
 }
 
 export interface BacktestStrategyResult {
@@ -127,6 +129,7 @@ export class BacktestRunner {
     for (; this.index < end; this.index++) {
       const round = rounds[this.index]!;
       if (round.startTime === null || round.lockTime === null || round.closeTime === null) continue;
+      if (this.opts.tradeFromEpoch !== undefined && round.epoch < this.opts.tradeFromEpoch) continue;
       for (const state of this.states) this.evaluate(state, this.index, round);
     }
     if (this.index >= rounds.length && !this.finished) {

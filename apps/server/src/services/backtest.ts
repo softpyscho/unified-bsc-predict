@@ -1,7 +1,8 @@
 /** Backtests over the canonical rounds table using the core replay engine (same decide() as live). */
-import type { BacktestStrategyResult, StrategyConfig, StrategyPlugin } from '@bsc/core';
+import type { BacktestStrategyResult, StrategyConfig, StrategyPlugin, WalkForwardResult } from '@bsc/core';
 import {
   BacktestRunner,
+  WalkForwardRunner,
   bnbToWei,
   defaultStrategyConfig,
   downsample,
@@ -33,6 +34,17 @@ export const BacktestRequestSchema = z.object({
     )
     .min(1)
     .max(6),
+  /** Tune one strategy over `grid` on rolling training windows and score each choice on the next, unseen window. */
+  walkForward: z
+    .object({
+      trainRounds: z.number().int().min(10),
+      testRounds: z.number().int().min(1),
+      stepRounds: z.number().int().min(1).optional(),
+      anchored: z.boolean().default(false),
+      objective: z.enum(['netPnl', 'roi']).default('netPnl'),
+      grid: z.record(z.string(), z.array(z.union([z.number(), z.string(), z.boolean()])).max(16)).default({}),
+    })
+    .optional(),
 });
 export type BacktestRequest = z.infer<typeof BacktestRequestSchema>;
 
@@ -86,6 +98,8 @@ export class BacktestService {
     if (this.active !== null) throw new BacktestInputError(`backtest #${this.active} is still running`);
     if (this.starting) throw new BacktestInputError('another backtest is being started');
     if (req.to <= req.from) throw new BacktestInputError('"to" must be after "from"');
+    if (req.walkForward && req.strategies.length !== 1)
+      throw new BacktestInputError('walk-forward tunes exactly one strategy (its grid is the search space)');
     this.starting = true;
     try {
       return await this.launch(req);
@@ -159,10 +173,9 @@ export class BacktestService {
           minWalletBalanceWei: 0n,
           maxGasPriceWei: null,
         };
-    const runner = new BacktestRunner({
+    const common = {
       market: market.slug,
       rounds,
-      strategies: specs,
       startingBankrollWei: bnbToWei(req.startingBankrollBnb),
       gasPerBetWei,
       gasPerClaimWei,
@@ -170,7 +183,49 @@ export class BacktestService {
       minBetWei: market.minBetWei ?? bnbToWei('0.001'),
       bufferSeconds: market.bufferSeconds ?? 30,
       globalLimits,
-    });
+    };
+    let job: {
+      step(): void;
+      done(): boolean;
+      progress(): number;
+      result(): Record<string, unknown>;
+    };
+    if (req.walkForward) {
+      const w = req.walkForward;
+      const spec = specs[0]!;
+      let wf: WalkForwardRunner;
+      try {
+        wf = new WalkForwardRunner({
+          ...common,
+          plugin: spec.plugin,
+          base: spec.config,
+          grid: w.grid,
+          trainRounds: w.trainRounds,
+          testRounds: w.testRounds,
+          stepRounds: w.stepRounds,
+          anchored: w.anchored,
+          objective: w.objective,
+        });
+      } catch (err) {
+        throw new BacktestInputError(errorMessage(err));
+      }
+      // Training windows replay every candidate side by side: keep each chunk's work about constant.
+      const budget = Math.max(50, Math.floor(STEP / wf.candidateCount));
+      job = {
+        step: () => wf.step(budget),
+        done: () => wf.done,
+        progress: () => wf.progress,
+        result: () => this.walkForwardResult(spec, wf.result()),
+      };
+    } else {
+      const runner = new BacktestRunner({ ...common, strategies: specs });
+      job = {
+        step: () => runner.step(STEP),
+        done: () => runner.done,
+        progress: () => runner.processed / runner.total,
+        result: () => ({ results: runner.results().map((r) => this.summarize(r)) }),
+      };
+    }
 
     const runId = await repos.backtests.create(req);
     this.active = runId;
@@ -187,7 +242,11 @@ export class BacktestService {
       gasPerClaim: gasPerClaimWei,
       treasuryFeeBps: market.treasuryFeeBps,
       appliedGlobalLimits: req.applyGlobalLimits,
+      walkForward: req.walkForward ?? null,
       assumptions: [
+        req.walkForward
+          ? 'Walk-forward: each fold picks a grid candidate on its training window only and trades it unchanged on the next window; folds start from the same bankroll with no own-trade history.'
+          : null,
         'Each strategy decides at lockTime − entrySecondsBeforeLock using only rounds final at that time.',
         'The betting round pool and oracle price are not visible (they are unknown before lock in the dataset).',
         'Payouts use the contract formula with the simulated stake added to the recorded pool (own dilution modelled).',
@@ -198,16 +257,15 @@ export class BacktestService {
 
     this.runPromise = (async () => {
       try {
-        while (!runner.done) {
+        while (!job.done()) {
           if (this.aborted) throw new Error('aborted: process shutting down');
-          runner.step(STEP);
-          const progress = runner.processed / runner.total;
+          job.step();
+          const progress = job.progress();
           await repos.backtests.progress(runId, progress);
           this.ctx.bus.emit('backtest', { id: runId, status: 'RUNNING', progress });
           await new Promise((r) => setImmediate(r));
         }
-        const results = runner.results().map((r) => this.summarize(r));
-        await repos.backtests.finish(runId, { ...meta, results }, Date.now() - started);
+        await repos.backtests.finish(runId, { ...meta, ...job.result() }, Date.now() - started);
         this.ctx.bus.emit('backtest', { id: runId, status: 'DONE', progress: 1 });
       } catch (err) {
         await repos.backtests.fail(runId, errorMessage(err)).catch(() => undefined);
@@ -218,6 +276,42 @@ export class BacktestService {
       }
     })();
     return runId;
+  }
+
+  /**
+   * The out-of-sample record is reported in the same shape as a plain backtest result (so every view of a backtest
+   * works), plus the per-fold detail.
+   */
+  private walkForwardResult(
+    spec: { key: string; plugin: StrategyPlugin; config: StrategyConfig },
+    res: WalkForwardResult,
+  ) {
+    const reasons: Record<string, number> = {};
+    const decisions = { evaluated: 0, trades: 0, noTrades: 0, errors: 0, reasons };
+    for (const f of res.folds) {
+      decisions.evaluated += f.testDecisions.evaluated;
+      decisions.trades += f.testDecisions.trades;
+      decisions.noTrades += f.testDecisions.noTrades;
+      decisions.errors += f.testDecisions.errors;
+      for (const [k, v] of Object.entries(f.testDecisions.reasons)) reasons[k] = (reasons[k] ?? 0) + v;
+    }
+    return {
+      results: [
+        this.summarize({
+          key: `${spec.key} (walk-forward, out of sample)`,
+          pluginId: spec.plugin.id,
+          config: spec.config,
+          report: res.outOfSample,
+          decisions,
+          entries: res.entries,
+        }),
+      ],
+      walkForward: {
+        candidates: res.candidates,
+        selectionStability: res.selectionStability,
+        folds: res.folds.map(({ testDecisions: _d, ...f }) => f),
+      },
+    };
   }
 
   private summarize(r: BacktestStrategyResult) {
