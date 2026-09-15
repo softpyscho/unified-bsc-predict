@@ -110,4 +110,5 @@ npm run validate   # secret scan, prettier, eslint, typecheck, unit/integration/
 - [docs/API.md](docs/API.md) — HTTP API and SSE stream
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — configuration, security, risk controls, recovery, troubleshooting, deployment
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — GitHub + Supabase + Vercel, and running the worker 24/7
+- [docs/ANDROID.md](docs/ANDROID.md) — running the worker 24/7 on an Android phone (Termux)
 - [docs/VALIDATION.md](docs/VALIDATION.md) — what was tested and how, including real-chain checks
