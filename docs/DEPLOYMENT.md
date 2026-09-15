@@ -19,50 +19,48 @@ Worker (your PC or a VM) ──writes──▶ Supabase (PostgreSQL)
 
 GitHub Actions, Vercel and Supabase cannot host the worker. Their compute is short-lived: Actions jobs end, Vercel
 functions run per request, and Supabase functions time out. The brief also forbids GitHub Actions as a betting
-worker. So the worker runs on a machine you control. Today that is this PC; a free always-on VM (for example Oracle
-Cloud "Always Free") is the upgrade if the PC cannot stay on.
+worker. So the worker runs on a machine that stays on: a free Google Cloud e2-micro VM (section 1), or this PC while
+it is on and logged in (section 1b).
 
 Private keys stay in the worker's environment only: never in Supabase, Vercel, GitHub or the dashboard.
 
-## 1. The worker, 24/7 on Oracle Cloud (Always Free)
+## 1. The worker, 24/7 on Google Cloud (free e2-micro)
 
-An Oracle "Always Free" virtual machine runs around the clock at no cost; your PC can be switched off. The worker
-talks to Supabase, so the machine only needs the code and a `.env` file.
+Google Cloud's free tier includes one small always-on virtual machine (e2-micro, 1 GB memory) in three US regions.
+It runs around the clock, so your PC can be switched off. The worker talks to Supabase, so the machine only needs the
+code and a `.env` file. (The setup script works on any Ubuntu machine, e.g. Oracle Cloud or a VPS.)
 
 **Only one worker is ever active per database.** The server takes a "worker lease" (a Postgres lock on its own
 connection) before it starts any loop. A second copy (your PC and the VM, say) answers its API but stands by, and
 takes over only if the active one stops or loses its connection. `GET /api/health` shows `"workerLease": "active"`
 or `"standby"`.
 
-### A. Create the account
+### A. Create the account and a project
 
-1. Go to <https://www.oracle.com/cloud/free/> and choose **Start for free**.
-2. **Home region**: choose **South Korea Central (Seoul)**, the same city as your Supabase project, so database
-   calls stay fast. The home region cannot be changed later, and Always Free machines live only there.
-3. Oracle asks for a card to verify your identity. Always Free resources are not charged.
+1. Go to <https://console.cloud.google.com>, sign in with a Google account, accept the terms and start the free
+   trial. Google asks for a card to verify you. The trial adds $300 of credit for 90 days; the e2-micro machine stays
+   free after that.
+2. At the top of the page, open the project picker, choose **New project**, name it `bsc-predict`, create it and
+   select it.
+3. Open **☰ → Compute Engine → VM instances** and click **Enable** for the Compute Engine API (it takes a minute).
 
 ### B. Create the machine
 
-1. In the console: **☰ → Compute → Instances → Create instance**. Name it `bsc-predict`.
-2. **Image**: click _Change image_ and pick **Canonical Ubuntu 24.04**.
-3. **Shape**: click _Change shape → Ampere → VM.Standard.A1.Flex_ with **1 OCPU and 6 GB memory** (marked "Always
-   Free-eligible"). If Oracle reports "out of capacity", try again later, or choose _Specialty and previous
-   generation → VM.Standard.E2.1.Micro_ (1 GB, also Always Free).
-4. **Networking**: keep the defaults (a new virtual network with a public IPv4 address).
-5. **SSH keys**: choose _Generate a key pair for me_ and click **Save private key**. Keep this file safe: it is the
-   only way in.
-6. Click **Create**. When the instance shows _Running_, copy its **Public IP address**.
+1. Click **Create instance** and name it `bsc-predict`.
+2. **Region**: **us-west1 (Oregon)**. Only us-west1, us-central1 and us-east1 are in the free tier; Oregon is the
+   closest of them to your Supabase project in Seoul. Any zone is fine.
+3. **Machine configuration**: series **E2**, machine type **e2-micro**.
+4. **OS and storage → Change**: operating system **Ubuntu**, version **Ubuntu 24.04 LTS (x86/64)**, boot disk type
+   **Standard persistent disk**, size **30 GB** (the free-tier maximum). Click **Select**.
+5. **Networking**: leave _Allow HTTP traffic_ and _Allow HTTPS traffic_ unchecked; nothing on the internet needs to
+   reach this machine.
+6. Click **Create**. The price estimate on that page does not include the free-tier discount; it is applied on the
+   bill.
 
-### C. Connect from your PC
+### C. Connect
 
-In PowerShell, protect the key file once (Windows' SSH refuses keys that others can read), then connect:
-
-```powershell
-icacls "$HOME\Downloads\ssh-key.key" /inheritance:r /grant:r "$($env:USERNAME):R"
-ssh -i "$HOME\Downloads\ssh-key.key" ubuntu@<public IP>
-```
-
-Use the path and name your key was saved under. Answer `yes` the first time.
+In the VM instances list, click **SSH** next to `bsc-predict`. A terminal opens in your browser (Google handles the
+keys). Every "on the VM" command below goes into that window.
 
 ### D. Install (on the VM, one command)
 
@@ -75,10 +73,11 @@ It installs Node.js 24 and git, adds swap on 1 GB machines, clones the repositor
 
 ### E. Give it your settings
 
-Copy your `.env` from the PC to the VM. Run this in PowerShell on the PC, not on the VM:
+In the browser SSH window, click **Upload file** (the upload button at the top right) and choose
+`C:\Users\Santo\unified-bsc-predict\.env` from your PC. It lands in your home folder; move it into place:
 
-```powershell
-scp -i "$HOME\Downloads\ssh-key.key" C:\Users\Santo\unified-bsc-predict\.env ubuntu@<public IP>:~/unified-bsc-predict/.env
+```bash
+mv ~/.env ~/unified-bsc-predict/.env
 ```
 
 It already contains everything the worker needs: `ADMIN_API_TOKEN`, `DATABASE_URL` (Supabase) and your stake and
@@ -110,21 +109,23 @@ Disable-ScheduledTask -TaskName 'BSC Predict worker'
 
 ### H. Day to day
 
-| Task                                | Command (on the VM unless noted)                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Health                              | `curl -s http://127.0.0.1:8080/api/health`                                                        |
-| Live logs                           | `journalctl -u bsc-predict -f` (also `~/unified-bsc-predict/logs/`)                               |
-| Update to the latest GitHub version | `~/unified-bsc-predict/deploy/linux/update.sh`                                                    |
-| Stop / start                        | `sudo systemctl stop bsc-predict` / `sudo systemctl start bsc-predict`                            |
-| Operator console on your PC         | on the PC: `ssh -i <key> -L 8080:127.0.0.1:8080 ubuntu@<public IP>`, then <http://localhost:8080> |
+| Task                                | Command (on the VM unless noted)                                                                                                       |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Health                              | `curl -s http://127.0.0.1:8080/api/health`                                                                                             |
+| Live logs                           | `journalctl -u bsc-predict -f` (also `~/unified-bsc-predict/logs/`)                                                                    |
+| Update to the latest GitHub version | `~/unified-bsc-predict/deploy/linux/update.sh`                                                                                         |
+| Stop / start                        | `sudo systemctl stop bsc-predict` / `sudo systemctl start bsc-predict`                                                                 |
+| Operator console on your PC         | on the PC, with the gcloud CLI: `gcloud compute ssh bsc-predict --zone <zone> -- -L 8080:127.0.0.1:8080`, then <http://localhost:8080> |
 
 Never open port 8080 to the internet: the console is reached through the SSH tunnel above, and the public view is
 the Vercel dashboard.
 
-**Idle reclamation.** Oracle may reclaim Always Free machines that stay almost idle for 7 days (under 20% CPU,
-network and, on Ampere, memory). This worker is light, so it can look idle. Upgrading the account to
-**Pay As You Go** (_Billing → Upgrade and manage payment_) exempts it; Always Free resources stay free, and nothing is
-charged unless you create paid resources. Set a budget alert to be sure.
+**Costs.** Free every month: one e2-micro in us-west1, us-central1 or us-east1, 30 GB of standard disk, and 1 GB of
+outgoing network traffic. This worker sends more than 1 GB a month (it talks to Supabase and the BSC nodes every few
+seconds), and traffic beyond the free 1 GB is billed per GB, so expect a small monthly charge, likely a few dollars
+at most. Check _Billing → Reports_ after the first week, and set a budget alert (_Billing → Budgets & alerts_, e.g.
+$5) so nothing surprises you. When the 90-day trial ends, Google requires upgrading to a paid account (_Activate
+full account_) to keep the machine running; it is still billed only for usage beyond the free limits.
 
 ## 1b. Alternative: the worker on your Windows PC
 

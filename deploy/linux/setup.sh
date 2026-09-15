@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command setup of the BSC Predict worker on an Ubuntu VM (e.g. Oracle Cloud "Always Free").
+# One-command setup of the BSC Predict worker on any Ubuntu VM (Google Cloud e2-micro, Oracle, a VPS).
 # Installs Node.js 24 and git, clones (or updates) the repository, builds it, and installs a systemd service that
 # starts at boot and restarts after any crash. Run it as the VM's normal user (it uses sudo where needed):
 #
