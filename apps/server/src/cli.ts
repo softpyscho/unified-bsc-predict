@@ -10,6 +10,7 @@ import { createApp } from './app.js';
 import type { App } from './app.js';
 import { ConfigError, loadConfig, publicConfig } from './config.js';
 import type { AppConfig } from './config.js';
+import { copyDatabase } from './db/copyDb.js';
 import { Db } from './db/database.js';
 import { importSqlite } from './db/importSqlite.js';
 import { migrate } from './db/migrations.js';
@@ -109,6 +110,55 @@ program
       process.exitCode = 1;
     } finally {
       await db.close();
+    }
+  });
+
+program
+  .command('copy-db')
+  .description(
+    'copy every table from DATABASE_URL into an empty Postgres database (e.g. Supabase) named by an environment ' +
+      'variable; stop the server first when DATABASE_URL is the embedded PGlite store',
+  )
+  .option(
+    '--target-env <name>',
+    'environment variable (e.g. in .env) holding the target postgres:// URL',
+    'TARGET_DATABASE_URL',
+  )
+  .action(async (o: { targetEnv: string }) => {
+    const cfg = config();
+    const targetUrl = process.env[o.targetEnv]?.trim();
+    if (!targetUrl || !/^postgres(ql)?:\/\//.test(targetUrl)) {
+      console.error(`error: set ${o.targetEnv}=postgres://… (the target database) in .env`);
+      process.exitCode = 1;
+      return;
+    }
+    if (targetUrl === cfg.databaseUrl) {
+      console.error('error: the target is the same database as DATABASE_URL');
+      process.exitCode = 1;
+      return;
+    }
+    const source = await Db.open(cfg.databaseUrl);
+    let target: Db | null = null;
+    try {
+      await migrate(source);
+      target = await Db.open(targetUrl);
+      console.log(`target migrated (${(await migrate(target)).length} migrations applied)`);
+      const tables = new Map<string, ReturnType<typeof progress>>();
+      print(
+        await copyDatabase(source, target, (table, done, total) => {
+          if (!tables.has(table)) tables.set(table, progress(`  ${table}`));
+          tables.get(table)!(done, total);
+        }),
+      );
+      console.log(
+        `Copy complete. Set DATABASE_URL to the ${o.targetEnv} value in .env and restart the server.`,
+      );
+    } catch (err) {
+      console.error(`error: ${errorMessage(err)}`);
+      process.exitCode = 1;
+    } finally {
+      await target?.close();
+      await source.close();
     }
   });
 

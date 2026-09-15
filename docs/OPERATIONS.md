@@ -86,8 +86,8 @@ second). A round's events are trusted only when they sum to the round's final bu
   looks like. `pool-events reset-backfill` retries, e.g. after pointing `LOG_RPC_URLS` at a node with more history.
 - Only BNB Chain nodes that serve `eth_getLogs` work: the default dataseeds reject it. 48.club returns block
   timestamps with each log and keeps a few days; any other node's timestamps are read from block headers.
-- Volume is roughly 100–300 events per round (tens of thousands of rows a day). That is fine for PGlite or a VPS
-  Postgres, but it fills Supabase's free 500 MB tier in about two months.
+- Volume measured on the live contract: about 25 events per round, roughly 7,000 rows (~1.5 MB) a day. With the full
+  round history (~290 MB) that fits Supabase's free 500 MB tier for roughly a year.
 
 ```bash
 npm run app -- pool-events status          # collected range, gaps, exact-reconstruction check of the last 288 final rounds
