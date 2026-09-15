@@ -13,6 +13,7 @@ import {
 import { PoolEventsRepo } from './poolEvents.js';
 import { ResearchRepo } from './research.js';
 import { RoundsRepo } from './rounds.js';
+import { ShadowRepo } from './shadow.js';
 import { ClaimsRepo, TradesRepo } from './trades.js';
 
 export function createRepos(db: Db) {
@@ -32,6 +33,7 @@ export function createRepos(db: Db) {
     sync: new SyncRepo(db),
     poolEvents: new PoolEventsRepo(db),
     research: new ResearchRepo(db),
+    shadow: new ShadowRepo(db),
   };
 }
 
@@ -43,6 +45,7 @@ export type { Trade, TradePatch, Claim } from './trades.js';
 export type { DecisionRecord } from './decisions.js';
 export type { PoolEvent, PoolEventSync, RoundPoolCheck } from './poolEvents.js';
 export type { Experiment, ExperimentStatus, ResearchTest } from './research.js';
+export type { ShadowCheck, ShadowOutcome } from './shadow.js';
 export type {
   StrategyRow,
   WalletRow,

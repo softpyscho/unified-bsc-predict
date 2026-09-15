@@ -102,7 +102,7 @@ describe('embedded PGlite directory lock', () => {
 describe('migrations (PGlite)', () => {
   it('apply once, are idempotent, and enforce the append-only and immutability triggers', async () => {
     const db = await Db.open('memory:');
-    expect(await migrate(db)).toEqual([1, 2, 3]);
+    expect(await migrate(db)).toEqual([1, 2, 3, 4]);
     expect(await migrate(db)).toEqual([]);
     await db.run(
       "INSERT INTO audit_events (ts, component, severity, type, message) VALUES (1, 'c', 'INFO', 't', 'm')",

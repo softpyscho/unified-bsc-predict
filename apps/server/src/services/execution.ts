@@ -8,7 +8,7 @@
  */
 import type { Decision, TradeMode } from '@bsc/core';
 import { weiToBnbString } from '@bsc/core';
-import type { Hex, TxReceipt } from '../chain/types.js';
+import type { Address, ChainHead, Hex, TxReceipt } from '../chain/types.js';
 import { classifyError, ExecutionError } from '../chain/types.js';
 import { isUniqueViolation } from '../db/database.js';
 import type { NewDecision } from '../repositories/decisions.js';
@@ -19,6 +19,14 @@ import type { Ctx } from './context.js';
 import { BET_GAS_ESTIMATE } from './riskState.js';
 
 export const RECEIPT_TIMEOUT_MS = 60_000;
+/** Sender for shadow simulations when no wallet is configured (no code, no bets; its balance is overridden). */
+export const SHADOW_ADDRESS: Address = '0x5AD0000000000000000000000000000000005aD0';
+
+interface PreflightRejection {
+  errorClass: string;
+  message: string;
+  countsTowardBreaker?: boolean;
+}
 
 export interface PlaceInput {
   strategy: StrategyRow;
@@ -41,6 +49,7 @@ const violatesUniqueOn = (err: unknown, table: string) =>
 
 export class ExecutionService {
   private readonly inflight = new Set<number>();
+  private readonly shadowInflight = new Set<Promise<void>>();
 
   constructor(
     private readonly ctx: Ctx,
@@ -51,8 +60,14 @@ export class ExecutionService {
     return this.inflight.has(tradeId);
   }
 
+  /** Live submissions and shadow checks still running. */
   get inflightCount(): number {
-    return this.inflight.size;
+    return this.inflight.size + this.shadowInflight.size;
+  }
+
+  /** Waits for shadow checks before the database closes. */
+  async shutdown(): Promise<void> {
+    await Promise.allSettled([...this.shadowInflight]);
   }
 
   /** Persists the decision and (if approved) the trade atomically, then starts live submission. */
@@ -117,54 +132,32 @@ export class ExecutionService {
         tradeId: trade.id,
         message: `PAPER ${trade.direction} ${weiToBnbString(trade.amount)} BNB on round ${round.epoch} (${strategy.slug})`,
       });
+      if (config.shadowPreflight) {
+        const check = this.shadowCheck(trade, round).catch((err: unknown) =>
+          this.ctx.log.app.error({ err, tradeId: trade.id }, 'shadow check failed'),
+        );
+        this.shadowInflight.add(check);
+        void check.finally(() => this.shadowInflight.delete(check));
+      }
       return { ...result, submission: null };
     }
     return { ...result, submission: this.submitLive(trade, round) };
   }
 
   private async submitLive(trade: Trade, round: StoredRound): Promise<Trade> {
-    const { reader, writer, config, repos } = this.ctx;
+    const { reader, writer, repos } = this.ctx;
     this.inflight.add(trade.id);
     try {
       if (!writer) return await this.fail(trade.id, 'NO_SIGNER', 'no signing wallet configured', true);
       const head = await reader.getHead();
-      if (head.currentEpoch !== round.epoch) {
+      const rejected = await this.preflight(trade.amount, round, head, writer.address, true);
+      if (rejected)
         return await this.fail(
           trade.id,
-          'STALE_ROUND',
-          `contract moved to epoch ${head.currentEpoch} before submission`,
+          rejected.errorClass,
+          rejected.message,
+          rejected.countsTowardBreaker ?? true,
         );
-      }
-      const secondsToLock = (round.lockTime ?? 0) - head.blockTimestamp;
-      if (secondsToLock < config.risk.minSecondsBeforeLock) {
-        return await this.fail(
-          trade.id,
-          'ROUND_LOCKING',
-          `only ${secondsToLock}s to lock at submission time`,
-        );
-      }
-      const [ledger, balance, gasPrice, params] = await Promise.all([
-        reader.getLedger(round.epoch, writer.address),
-        reader.getBalance(writer.address),
-        reader.getGasPrice(),
-        reader.getParams(),
-      ]);
-      if (ledger.amount > 0n)
-        return await this.fail(
-          trade.id,
-          'DUPLICATE_BET',
-          'wallet already has a bet in this round on-chain',
-          false,
-        );
-      if (params.paused) return await this.fail(trade.id, 'MARKET_PAUSED', 'contract is paused');
-      if (trade.amount < params.minBetWei)
-        return await this.fail(trade.id, 'BELOW_MIN_BET', 'stake below contract minBetAmount');
-      if (config.risk.maxGasPriceWei !== null && gasPrice > config.risk.maxGasPriceWei) {
-        return await this.fail(trade.id, 'GAS_PRICE', `gas price ${gasPrice} above limit`);
-      }
-      if (balance < trade.amount + BET_GAS_ESTIMATE * gasPrice) {
-        return await this.fail(trade.id, 'INSUFFICIENT_FUNDS', 'balance below stake + gas');
-      }
 
       const prepared = await writer.prepareBet(trade.direction, round.epoch, trade.amount);
       let current = await repos.trades.transition(
@@ -238,6 +231,98 @@ export class ExecutionService {
     } finally {
       this.inflight.delete(trade.id);
     }
+  }
+
+  /** The live pre-flight against fresh chain state. Returns the first failed check, or null when all pass. */
+  private async preflight(
+    amount: bigint,
+    round: StoredRound,
+    head: ChainHead,
+    address: Address,
+    checkBalance: boolean,
+  ): Promise<PreflightRejection | null> {
+    const { reader, config } = this.ctx;
+    if (head.currentEpoch !== round.epoch)
+      return {
+        errorClass: 'STALE_ROUND',
+        message: `contract moved to epoch ${head.currentEpoch} before submission`,
+      };
+    const secondsToLock = (round.lockTime ?? 0) - head.blockTimestamp;
+    if (secondsToLock < config.risk.minSecondsBeforeLock)
+      return { errorClass: 'ROUND_LOCKING', message: `only ${secondsToLock}s to lock at submission time` };
+    const [ledger, balance, gasPrice, params] = await Promise.all([
+      reader.getLedger(round.epoch, address),
+      checkBalance ? reader.getBalance(address) : Promise.resolve(null),
+      reader.getGasPrice(),
+      reader.getParams(),
+    ]);
+    if (ledger.amount > 0n)
+      return {
+        errorClass: 'DUPLICATE_BET',
+        message: 'wallet already has a bet in this round on-chain',
+        countsTowardBreaker: false,
+      };
+    if (params.paused) return { errorClass: 'MARKET_PAUSED', message: 'contract is paused' };
+    if (amount < params.minBetWei)
+      return { errorClass: 'BELOW_MIN_BET', message: 'stake below contract minBetAmount' };
+    if (config.risk.maxGasPriceWei !== null && gasPrice > config.risk.maxGasPriceWei)
+      return { errorClass: 'GAS_PRICE', message: `gas price ${gasPrice} above limit` };
+    if (balance !== null && balance < amount + BET_GAS_ESTIMATE * gasPrice)
+      return { errorClass: 'INSUFFICIENT_FUNDS', message: 'balance below stake + gas' };
+    return null;
+  }
+
+  /**
+   * Shadow check of a paper fill: would the same bet have been accepted live right now? Runs the live pre-flight
+   * (the wallet balance only when a signer is configured) and simulates the contract call. Never broadcasts.
+   */
+  private async shadowCheck(trade: Trade, round: StoredRound): Promise<void> {
+    const { reader, config, repos, clock } = this.ctx;
+    const started = Date.now();
+    const from = config.walletAddress ?? SHADOW_ADDRESS;
+    let outcome: 'ACCEPTED' | 'REJECTED' | 'UNAVAILABLE' = 'ACCEPTED';
+    let errorClass: string | null = null;
+    let message: string | null = null;
+    let blockNumber: number | null = null;
+    let secondsToLock: number | null = null;
+    try {
+      const head = await reader.getHead();
+      blockNumber = Number(head.blockNumber);
+      secondsToLock = (round.lockTime ?? 0) - head.blockTimestamp;
+      const rejected = await this.preflight(trade.amount, round, head, from, config.hasSigner);
+      if (rejected) {
+        outcome = 'REJECTED';
+        ({ errorClass, message } = rejected);
+      } else {
+        await reader.simulateBet(trade.direction, round.epoch, trade.amount, from);
+      }
+    } catch (err) {
+      const e = classifyError(err);
+      outcome = e.errorClass === 'CONTRACT_REVERT' ? 'REJECTED' : 'UNAVAILABLE';
+      errorClass = e.errorClass;
+      message = e.message;
+    }
+    await repos.shadow.insert({
+      tradeId: trade.id,
+      checkedAt: clock.nowMs(),
+      blockNumber,
+      secondsToLock,
+      outcome,
+      errorClass,
+      message,
+      latencyMs: Date.now() - started,
+    });
+    if (outcome === 'REJECTED')
+      await this.ctx.audit.record({
+        component: 'execution',
+        severity: 'WARN',
+        type: AuditType.SHADOW_REJECTED,
+        marketId: trade.marketId,
+        epoch: trade.epoch,
+        strategyId: trade.strategyId,
+        tradeId: trade.id,
+        message: `shadow: a live bet for paper trade #${trade.id} would have been rejected (${errorClass}: ${message})`,
+      });
   }
 
   /** Applies a mined receipt. Reverted transactions still record the gas they burned. */

@@ -141,6 +141,7 @@ export async function createApp(config: AppConfig, deps: AppDeps = {}) {
       await worker.stop();
       await backtests.shutdown();
       await research.shutdown();
+      await execution.shutdown();
       await db.close();
       log.close();
     },

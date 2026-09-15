@@ -82,6 +82,7 @@ const schema = z.object({
   ESCALATION_MIN_LOSS_STREAK: int(0, 1000).default(0),
   LIVE_REQUIRE_POSITIVE_EV: boolish.default(true),
   EDGE_BALANCE_PULL: num(0, 1).default(0.5),
+  SHADOW_PREFLIGHT: boolish.default(true),
   MAX_BANKROLL_FRACTION: num(0, 1).default(0.05),
   MAX_DAILY_LOSS: bnb.default(bnbToWei('0.05')),
   MAX_CONSECUTIVE_LOSSES: int(0, 1000).default(5),
@@ -136,6 +137,8 @@ export interface AppConfig {
   risk: RiskLimits;
   /** Late-money model for expected value (see packages/core/src/edge.ts). */
   edge: { balancePull: number };
+  /** Check every paper fill against the live pre-flight and a simulated contract call (never broadcast). */
+  shadowPreflight: boolean;
   maxExecutionFailures: number;
   simulatedGasPerBetWei: bigint;
   simulatedGasPerClaimWei: bigint;
@@ -253,6 +256,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       liveRequiresPositiveEv: e.LIVE_REQUIRE_POSITIVE_EV,
     },
     edge: { balancePull: e.EDGE_BALANCE_PULL },
+    shadowPreflight: e.SHADOW_PREFLIGHT,
     maxExecutionFailures: e.MAX_EXECUTION_FAILURES,
     simulatedGasPerBetWei: e.SIMULATED_GAS_PER_BET,
     simulatedGasPerClaimWei: e.SIMULATED_GAS_PER_CLAIM,
@@ -311,6 +315,7 @@ export function publicConfig(c: AppConfig) {
       liveRequiresPositiveEv: c.risk.liveRequiresPositiveEv,
     },
     edge: c.edge,
+    shadowPreflight: c.shadowPreflight,
     maxExecutionFailures: c.maxExecutionFailures,
     simulatedGasPerBet: w(c.simulatedGasPerBetWei),
     simulatedGasPerClaim: w(c.simulatedGasPerClaimWei),

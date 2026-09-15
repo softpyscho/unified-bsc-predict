@@ -149,6 +149,37 @@ evaporate by lock. Calibrate it from your own pool events: run a research experi
 With the research verdict at "no edge", the live gate is expected to refuse nearly every bet. That is the intended
 behaviour: live money only moves on a positive expected value.
 
+## Shadow checks
+
+Paper fills are instant, which hides the question live trading has to answer: would the bet actually have been
+accepted? With `SHADOW_PREFLIGHT=true` (default) every paper fill is followed by a shadow check against fresh chain
+state: the same pre-flight as a live bet (current epoch, time to lock, paused, minimum bet, gas price, and the
+wallet's balance and existing bet when a signer is configured), then the contract call itself is simulated with
+`eth_call` (the sender's balance is overridden, so no funds are needed). Nothing is ever broadcast.
+
+Each check is stored in `shadow_checks` as `ACCEPTED`, `REJECTED` (with the reason) or `UNAVAILABLE` (RPC failure,
+no verdict), with the seconds left to lock and the check's latency. A rejection is audited as `SHADOW_REJECTED`.
+`GET /api/shadow?hours=168` summarises the acceptance rate, the rejection reasons, and how close to lock checks ran;
+`GET /api/trades/:id` includes the trade's check.
+
+## Walk-forward validation
+
+A single backtest over hand-picked parameters flatters them. Walk-forward tests the tuning procedure instead: history
+is cut into folds; in each, every candidate from a parameter grid is replayed on the training window, the best one
+(net P&L, or ROI) is picked using that window only, and it is then traded unchanged on the next, unseen window. The
+test windows never overlap, and their combined ledger is the out-of-sample result. `selectionStability` (how often a
+fold kept the previous fold's choice) near 0 means the "best" parameters are noise.
+
+```bash
+npm run app -- backtest --strategy streak-reversal --from 2025-01-01 --to 2026-09-01 \
+  --walk-forward 20000:5000 --grid '{"streak":[2,3,4,5]}' [--anchored] [--objective roi]
+```
+
+The API takes the same as `walkForward: { trainRounds, testRounds, stepRounds?, anchored?, objective?, grid }` on a
+one-strategy `POST /api/backtest`. Every fold starts from the same bankroll with no own-trade history (a recovery
+ladder restarts at step 1). A look-ahead test in the core suite checks every built-in strategy: changing all rounds
+after epoch k must leave every trade up to epoch k+2 unchanged.
+
 ## Historical data
 
 ```bash

@@ -451,6 +451,29 @@ CREATE TRIGGER research_tests_append_only BEFORE UPDATE OR DELETE ON research_te
   FOR EACH ROW EXECUTE FUNCTION reject_mutation();
 `,
   },
+  {
+    id: 4,
+    name: 'shadow checks',
+    sql: `
+-- For every paper trade: would the same bet have been accepted live at that moment? The live pre-flight runs
+-- against fresh chain state and the contract call is simulated (never broadcast).
+CREATE TABLE shadow_checks (
+  id ${ID},
+  trade_id BIGINT NOT NULL UNIQUE REFERENCES trades(id),
+  checked_at BIGINT NOT NULL,
+  block_number BIGINT,
+  seconds_to_lock DOUBLE PRECISION,
+  outcome TEXT NOT NULL CHECK (outcome IN ('ACCEPTED','REJECTED','UNAVAILABLE')),
+  error_class TEXT,
+  message TEXT,
+  latency_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX idx_shadow_checked_at ON shadow_checks(checked_at);
+CREATE TRIGGER shadow_checks_append_only BEFORE UPDATE OR DELETE ON shadow_checks
+  FOR EACH ROW EXECUTE FUNCTION reject_mutation();
+`,
+  },
 ];
 
 /** Applies pending migrations in one transaction under an advisory lock, so concurrent processes cannot race. */

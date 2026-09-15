@@ -61,6 +61,10 @@ export class FakeChain implements PredictionReader {
   snapshotFailures = 0;
   /** Transient eth_getLogs failures to inject. */
   logFailures = 0;
+  /** Revert reason injected into the next bet simulation (shadow checks). */
+  simulateRevert: string | null = null;
+  /** Transient failures injected into bet simulations. */
+  simulateFailures = 0;
   /** Log requests reaching below this block fail, as on a node that has pruned old history. */
   prunedBelow = 0n;
   readonly broadcasts: Hex[] = [];
@@ -365,6 +369,19 @@ export class FakeChain implements PredictionReader {
       claimable: this.isClaimable(epoch, address),
       refundable: this.isRefundable(epoch, address),
     }));
+  }
+
+  async simulateBet(_direction: Direction, epoch: number, value: bigint, from: Address): Promise<void> {
+    if (this.simulateFailures > 0) {
+      this.simulateFailures--;
+      throw new Error('fetch failed');
+    }
+    if (this.simulateRevert !== null) {
+      const reason = this.simulateRevert;
+      this.simulateRevert = null;
+      throw new Error(`execution reverted: ${reason}`);
+    }
+    this.requireBettable(epoch, from, value);
   }
 
   async getBetEvents(fromBlock: bigint, toBlock: bigint): Promise<BetEvent[]> {

@@ -176,6 +176,20 @@ export class ViemPredictionReader implements PredictionReader {
       );
   }
 
+  async simulateBet(direction: Direction, epoch: number, value: bigint, from: Address): Promise<void> {
+    await this.client.call({
+      account: from,
+      to: this.contract,
+      data: encodeFunctionData({
+        abi: predictionV2Abi,
+        functionName: direction === 'BULL' ? 'betBull' : 'betBear',
+        args: [BigInt(epoch)],
+      }),
+      value,
+      stateOverride: [{ address: from, balance: value + 10n ** 18n }],
+    });
+  }
+
   async getParams(): Promise<ContractParams> {
     const [interval, buffer, fee, minBet, oracle, paused] = await this.client.multicall({
       allowFailure: false,

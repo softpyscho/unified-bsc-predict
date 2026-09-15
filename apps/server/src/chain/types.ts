@@ -86,6 +86,12 @@ export interface PredictionReader {
   ): Promise<{ epoch: number; claimable: boolean; refundable: boolean }[]>;
   getBalance(address: Address): Promise<bigint>;
   getGasPrice(): Promise<bigint>;
+  /**
+   * Simulates betBull/betBear from `from` against the latest state (eth_call with the sender's balance overridden
+   * to cover the stake). Resolves when the contract would accept the bet; throws its revert otherwise. Never
+   * broadcasts.
+   */
+  simulateBet(direction: Direction, epoch: number, value: bigint, from: Address): Promise<void>;
 }
 
 /** A signed, not yet broadcast transaction. Its hash is known before broadcast and persisted first. */

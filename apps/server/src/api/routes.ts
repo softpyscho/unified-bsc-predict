@@ -309,6 +309,18 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
 
   server.get('/api/pool-events', async () => app.poolEvents.status());
 
+  server.get('/api/shadow', async (req) => {
+    const { hours } = z
+      .object({
+        hours: int
+          .min(1)
+          .max(24 * 90)
+          .default(168),
+      })
+      .parse(req.query);
+    return repos.shadow.summary(app.ctx.clock.nowMs() - hours * 3_600_000);
+  });
+
   // ------------------------------------------------------------------------------------------------ research
 
   server.get('/api/research/experiments', async () => app.research.list());
@@ -403,6 +415,7 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       decision: t.decisionId ? await repos.decisions.get(t.decisionId) : null,
       round: await repos.rounds.getById(t.roundId),
       strategy: t.strategyId ? await repos.strategies.get(t.strategyId) : null,
+      shadow: await repos.shadow.forTrade(t.id),
     };
   });
 
