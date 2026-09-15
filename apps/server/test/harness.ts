@@ -27,6 +27,8 @@ export function testEnv(overrides: Record<string, string> = {}): Record<string, 
     MAX_CONSECUTIVE_LOSSES: '0',
     MAX_EXECUTION_FAILURES: '2',
     CLAIM_BATCH_MIN: '1',
+    // Execution tests exercise the live pipeline itself; the EV gate has its own test.
+    LIVE_REQUIRE_POSITIVE_EV: 'false',
     ...overrides,
   };
 }

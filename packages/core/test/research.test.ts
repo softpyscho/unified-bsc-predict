@@ -90,5 +90,11 @@ describe('research: studies', () => {
     expect(res.pools!.sampleRounds).toBe(160);
     // At T−30s only the early BULL money is visible: 100% of the late flow is the BEAR bet.
     expect(res.pools!.perOffset[0]!.lateFlow.mean).toBeGreaterThan(0.3);
+    // Every round looks 100% BULL at T−30s (centred share 0.5), so the through-origin slope is the mean centred
+    // final share divided by 0.5, and the pull is 1 minus that.
+    const used = rounds.filter((r) => r.epoch % 5 !== 0);
+    const meanCentred = used.reduce((a, r) => a + Number(r.bull) / Number(r.total) - 0.5, 0) / used.length;
+    expect(res.pools!.perOffset[0]!.balancePull).toEqual({ pull: expect.any(Number), n: 160 });
+    expect(res.pools!.perOffset[0]!.balancePull!.pull).toBeCloseTo(1 - meanCentred / 0.5, 10);
   });
 });

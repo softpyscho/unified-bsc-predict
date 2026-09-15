@@ -30,6 +30,11 @@ export interface RiskLimits {
   minConfidence: number;
   minExpectedEdge: number | null;
   minSecondsBeforeLock: number;
+  /**
+   * Live bets need a positive expected value after fee, dilution, gas and late money. Paper and backtests are
+   * unaffected (they trade for observation). A strategy can switch it on but never off.
+   */
+  liveRequiresPositiveEv: boolean;
 }
 
 /** Strategy limits may only tighten global limits. */
@@ -77,6 +82,7 @@ export function mergeLimits(global: RiskLimits, overrides: Partial<RiskLimits>):
         ? global.minExpectedEdge
         : Math.max(global.minExpectedEdge ?? -Infinity, overrides.minExpectedEdge),
     minSecondsBeforeLock: Math.max(global.minSecondsBeforeLock, overrides.minSecondsBeforeLock ?? 0),
+    liveRequiresPositiveEv: global.liveRequiresPositiveEv || overrides.liveRequiresPositiveEv === true,
   };
 }
 
@@ -161,6 +167,15 @@ export function evaluateRisk(input: RiskInput): RiskResult {
       'MIN_EXPECTED_EDGE',
       input.expectedEdge >= limits.minExpectedEdge,
       `edge ${(input.expectedEdge * 100).toFixed(2)}% (minimum ${(limits.minExpectedEdge * 100).toFixed(2)}%)`,
+    );
+  }
+  if (input.mode === 'LIVE' && limits.liveRequiresPositiveEv) {
+    add(
+      'POSITIVE_EXPECTED_VALUE',
+      input.expectedEdge !== null && input.expectedEdge > 0,
+      input.expectedEdge === null
+        ? 'expected value not computable: betting pool not observable'
+        : `expected value ${(input.expectedEdge * 100).toFixed(2)}% per unit staked after fee, dilution, gas and late money (live bets need > 0)`,
     );
   }
 

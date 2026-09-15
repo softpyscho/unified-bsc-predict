@@ -80,6 +80,8 @@ const schema = z.object({
   MIN_BET_SIZE: bnb.default(0n),
   ESCALATION_STAKE_THRESHOLD: bnb.default(0n),
   ESCALATION_MIN_LOSS_STREAK: int(0, 1000).default(0),
+  LIVE_REQUIRE_POSITIVE_EV: boolish.default(true),
+  EDGE_BALANCE_PULL: num(0, 1).default(0.5),
   MAX_BANKROLL_FRACTION: num(0, 1).default(0.05),
   MAX_DAILY_LOSS: bnb.default(bnbToWei('0.05')),
   MAX_CONSECUTIVE_LOSSES: int(0, 1000).default(5),
@@ -132,6 +134,8 @@ export interface AppConfig {
   paperStartingBankrollWei: bigint;
   defaultBetWei: bigint;
   risk: RiskLimits;
+  /** Late-money model for expected value (see packages/core/src/edge.ts). */
+  edge: { balancePull: number };
   maxExecutionFailures: number;
   simulatedGasPerBetWei: bigint;
   simulatedGasPerClaimWei: bigint;
@@ -246,7 +250,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       minConfidence: 0,
       minExpectedEdge: null,
       minSecondsBeforeLock: e.MIN_SECONDS_BEFORE_LOCK,
+      liveRequiresPositiveEv: e.LIVE_REQUIRE_POSITIVE_EV,
     },
+    edge: { balancePull: e.EDGE_BALANCE_PULL },
     maxExecutionFailures: e.MAX_EXECUTION_FAILURES,
     simulatedGasPerBetWei: e.SIMULATED_GAS_PER_BET,
     simulatedGasPerClaimWei: e.SIMULATED_GAS_PER_CLAIM,
@@ -302,7 +308,9 @@ export function publicConfig(c: AppConfig) {
       minWalletBalance: w(c.risk.minWalletBalanceWei),
       maxGasPriceGwei: c.risk.maxGasPriceWei === null ? null : Number(c.risk.maxGasPriceWei) / 1e9,
       minSecondsBeforeLock: c.risk.minSecondsBeforeLock,
+      liveRequiresPositiveEv: c.risk.liveRequiresPositiveEv,
     },
+    edge: c.edge,
     maxExecutionFailures: c.maxExecutionFailures,
     simulatedGasPerBet: w(c.simulatedGasPerBetWei),
     simulatedGasPerClaim: w(c.simulatedGasPerClaimWei),

@@ -67,4 +67,5 @@ export const LOOSE_LIMITS: RiskLimits = {
   minConfidence: 0,
   minExpectedEdge: null,
   minSecondsBeforeLock: 5,
+  liveRequiresPositiveEv: false,
 };

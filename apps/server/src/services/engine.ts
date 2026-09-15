@@ -60,6 +60,7 @@ const failed = (reason: string, error: string): Decision => ({
   intendedStakeWei: null,
   stakeWei: null,
   expectedEdge: null,
+  edge: null,
   checks: [],
   reason,
   error,
@@ -300,6 +301,12 @@ export class StrategyEngine {
       state: riskState,
       gates: await this.gates(mode, strategy, state, args.source),
       minBetWei: state.params.minBetWei,
+      treasuryFeeBps: state.params.treasuryFeeBps,
+      edgeModel: {
+        gasBetBnb: weiToBnb(this.ctx.config.simulatedGasPerBetWei),
+        gasClaimBnb: weiToBnb(this.ctx.config.simulatedGasPerClaimWei),
+        balancePull: this.ctx.config.edge.balancePull,
+      },
     });
     const inputs = {
       chainTime: Math.round(now),
@@ -317,6 +324,7 @@ export class StrategyEngine {
       gasPrice: riskState.gasPriceWei?.toString() ?? null,
       params: config.params,
       sizing: config.sizing,
+      edge: decision.edge,
     };
     return { decision, inputs };
   }

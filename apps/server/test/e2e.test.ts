@@ -239,6 +239,25 @@ describe('live trading end-to-end (simulated contract)', () => {
     await h.app.close();
   });
 
+  it('refuses live bets without positive expected value when the EV gate is on', async () => {
+    // Full balance pull: late money is expected to even out the pools, so a 50% signal cannot beat the fee.
+    const h = await liveHarness({ env: { LIVE_REQUIRE_POSITIVE_EV: 'true', EDGE_BALANCE_PULL: '1' } });
+    for (const p of [600, 601, 602, 603]) await playRound(h, p * 1e8);
+    const signalled = (
+      await h.app.repos.decisions.list({ mode: 'LIVE' }, { limit: 20, offset: 0 })
+    ).rows.filter((d) => d.signal === 'BUY_UP' || d.signal === 'BUY_DOWN');
+    expect(signalled.length).toBeGreaterThan(0);
+    for (const d of signalled) {
+      expect(d.decision).toBe('NO_TRADE');
+      expect(d.reason).toMatch(/^RISK_REJECTED: POSITIVE_EXPECTED_VALUE/);
+      const edge = (d.inputs as { edge: { ev: number; expectedMultiplier: number } }).edge;
+      expect(edge.ev).toBeLessThan(0);
+      expect(edge.expectedMultiplier).toBeLessThan(2);
+    }
+    expect(h.writer!.sent).toHaveLength(0);
+    await h.app.close();
+  });
+
   it('rejects before submission when the wallet cannot afford the bet', async () => {
     // Fraction cap off so the 0.01 BNB stake is not clamped below the contract minimum first.
     const h = await makeHarness({ live: true, env: { MAX_BANKROLL_FRACTION: '1' } });

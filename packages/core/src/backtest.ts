@@ -231,6 +231,7 @@ export class BacktestRunner {
 
     const decision = decide({
       mode: 'BACKTEST',
+      treasuryFeeBps: opts.treasuryFeeBps,
       plugin: state.spec.plugin,
       config: state.spec.config,
       ctx,

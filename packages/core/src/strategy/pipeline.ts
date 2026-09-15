@@ -2,11 +2,13 @@
  * Strategy → Signal → sizing → risk. Identical for BACKTEST, PAPER and LIVE; only the execution adapter
  * that consumes the resulting Decision differs.
  */
+import type { EdgeBreakdown, EdgeModel } from '../edge.js';
+import { NO_COSTS, expectedValue } from '../edge.js';
 import type { Direction } from '../round.js';
 import type { GateCheck, RiskCheck, RiskLimits, RiskState } from '../risk.js';
 import { evaluateRisk } from '../risk.js';
 import type { RunMode } from '../trade.js';
-import { bnbToWei, mulWeiByFraction, stakeBnbToWei } from '../units.js';
+import { bnbToWei, mulWeiByFraction, stakeBnbToWei, weiToBnb } from '../units.js';
 import type { StrategyConfig } from './config.js';
 import type { Signal, StrategyContext, StrategyPlugin } from './types.js';
 import { SIGNAL_ACTIONS, signalDirection } from './types.js';
@@ -19,7 +21,9 @@ export interface Decision {
   direction: Direction | null;
   intendedStakeWei: bigint | null;
   stakeWei: bigint | null;
+  /** Expected net profit per unit staked (the edge engine's `ev`); null when the pool is not observable. */
   expectedEdge: number | null;
+  edge: EdgeBreakdown | null;
   checks: RiskCheck[];
   /** Machine-readable reason code followed by human detail, e.g. "RISK_REJECTED: MAX_EXPOSURE: ...". */
   reason: string;
@@ -35,6 +39,9 @@ export interface DecideInput {
   state: RiskState;
   gates: readonly GateCheck[];
   minBetWei: bigint;
+  treasuryFeeBps: number;
+  /** Costs and late-money model for expected value; without it only the fee and dilution are charged. */
+  edgeModel?: EdgeModel;
 }
 
 export function computeStake(sizing: StrategyConfig['sizing'], bankrollWei: bigint, signal: Signal): bigint {
@@ -71,6 +78,7 @@ const noTrade = (reason: string, extra: Partial<Decision> = {}): Decision => ({
   intendedStakeWei: null,
   stakeWei: null,
   expectedEdge: null,
+  edge: null,
   checks: [],
   reason,
   error: null,
@@ -113,11 +121,19 @@ export function decide(input: DecideInput): Decision {
     });
   }
 
-  const pool = ctx.betting.pool;
-  const payout = pool ? (direction === 'BULL' ? pool.bullPayout : pool.bearPayout) : null;
-  const expectedEdge = payout === null ? null : signal.confidence * payout - 1;
-
   const intended = computeStake(config.sizing, input.state.bankrollWei, signal);
+  const pool = ctx.betting.pool;
+  const edge = pool
+    ? expectedValue({
+        probability: signal.confidence,
+        direction,
+        pool,
+        stakeBnb: weiToBnb(intended),
+        treasuryFeeBps: input.treasuryFeeBps,
+        model: input.edgeModel ?? NO_COSTS,
+      })
+    : null;
+  const expectedEdge = edge?.ev ?? null;
   const risk = evaluateRisk({
     mode: input.mode,
     direction,
@@ -136,6 +152,7 @@ export function decide(input: DecideInput): Decision {
       direction,
       intendedStakeWei: intended,
       expectedEdge,
+      edge,
       checks: risk.checks,
     });
   }
@@ -146,6 +163,7 @@ export function decide(input: DecideInput): Decision {
     intendedStakeWei: intended,
     stakeWei: risk.stakeWei,
     expectedEdge,
+    edge,
     checks: risk.checks,
     reason: `APPROVED: ${signal.rationale}`,
     error: null,

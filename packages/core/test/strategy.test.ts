@@ -191,6 +191,7 @@ function run(
     },
     gates: [],
     minBetWei: bnbToWei('0.001'),
+    treasuryFeeBps: 300,
     ...overrides,
   });
 }

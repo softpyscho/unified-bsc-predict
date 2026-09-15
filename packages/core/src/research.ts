@@ -6,6 +6,7 @@
  * gas charged. A rule is an edge candidate only if its held-out net return is significantly positive after
  * Benjamini–Hochberg correction across all rules searched, so testing more rules cannot manufacture an edge.
  */
+import { estimateBalancePull } from './edge.js';
 import type { Direction, RoundOutcome } from './round.js';
 import { simulatedPayout } from './round.js';
 import {
@@ -20,7 +21,7 @@ import {
 } from './statistics.js';
 
 /** Bump when an analysis changes, so stored experiment results say which code produced them. */
-export const RESEARCH_CODE_VERSION = 'research-1';
+export const RESEARCH_CODE_VERSION = 'research-2';
 
 export interface ResearchRound {
   epoch: number;
@@ -463,11 +464,14 @@ export function poolStudy(
     const ys: number[] = [];
     const longOos: { r: ResearchRound; side: Direction }[] = [];
     const favOos: { r: ResearchRound; side: Direction }[] = [];
+    const shares: { decisionShare: number; finalShare: number }[] = [];
     sample.forEach(({ r, at }, idx) => {
       const a = at[oi]!;
       const seen = a.bull + a.bear;
       if (r.total > 0n) lateShares.push(bnb(r.total - seen) / bnb(r.total));
       if (seen === 0n) return;
+      if (r.total > 0n)
+        shares.push({ decisionShare: bnb(a.bull) / bnb(seen), finalShare: bnb(r.bull) / bnb(r.total) });
       if (idx < split) {
         if (isDecided(r.outcome)) {
           xs.push(bnb(a.bull) / bnb(seen));
@@ -522,6 +526,8 @@ export function poolStudy(
     return {
       offset: off,
       lateFlow: { n: late.length, mean: avg(late), median: quantile(late, 0.5) },
+      /** Calibration for the edge engine's EDGE_BALANCE_PULL at this decision offset. */
+      balancePull: estimateBalancePull(shares),
       correlation: corr,
       quintiles,
       longOdds,

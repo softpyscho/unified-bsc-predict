@@ -128,6 +128,27 @@ With embedded PGlite, stop the server before running CLI research, or use the AP
 `POST /api/research/experiments` with `{ "name": "…", "spec": { … } }` returns `202 { id }`, then poll
 `GET /api/research/experiments/:id`.
 
+## Edge engine
+
+Every decision with an observable pool records the edge engine's breakdown in its inputs (`inputs.edge`):
+displayed multiplier, multiplier after this stake dilutes the pool, expected multiplier after late money, break-even
+probability, and expected value per unit staked and in BNB. The strategy's `confidence` is the win probability; the
+fee, own-stake dilution, bet gas and claim gas (`SIMULATED_GAS_PER_BET`, `SIMULATED_GAS_PER_CLAIM`) are charged.
+
+Late money is modelled as a pull toward 50/50 (`EDGE_BALANCE_PULL`, 0..1; default 0.5). Phase 0 measured that most
+of each pool arrives in the last 30 s and flows into the side that looks cheap, so long odds at decision time mostly
+evaporate by lock. Calibrate it from your own pool events: run a research experiment with the `pool` family and read
+`perOffset[].balancePull` for the offset your strategies decide at.
+
+| Variable                   | Default | Effect                                                                             |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `LIVE_REQUIRE_POSITIVE_EV` | `true`  | live bets need expected value > 0 (`POSITIVE_EXPECTED_VALUE`); paper is unaffected |
+| `EDGE_BALANCE_PULL`        | `0.5`   | late-money pull toward balance used for expected value                             |
+| `minExpectedEdge` (limits) | off     | per-strategy minimum expected value for any mode (`MIN_EXPECTED_EDGE`)             |
+
+With the research verdict at "no edge", the live gate is expected to refuse nearly every bet. That is the intended
+behaviour: live money only moves on a positive expected value.
+
 ## Historical data
 
 ```bash

@@ -151,6 +151,19 @@ describe('risk engine', () => {
     expect(small.stakeWei).toBe(bnbToWei('0.04'));
   });
 
+  it('requires positive expected value for live bets when enabled, never for paper', () => {
+    const limits = { ...LOOSE_LIMITS, liveRequiresPositiveEv: true };
+    expect(failed(risk({ mode: 'LIVE', limits, expectedEdge: -0.03 }))).toEqual(['POSITIVE_EXPECTED_VALUE']);
+    expect(failed(risk({ mode: 'LIVE', limits, expectedEdge: 0 }))).toEqual(['POSITIVE_EXPECTED_VALUE']);
+    expect(failed(risk({ mode: 'LIVE', limits, expectedEdge: null }))).toEqual(['POSITIVE_EXPECTED_VALUE']);
+    expect(risk({ mode: 'LIVE', limits, expectedEdge: 0.01 }).approved).toBe(true);
+    expect(risk({ mode: 'PAPER', limits, expectedEdge: -0.03 }).approved).toBe(true);
+    expect(risk({ mode: 'LIVE', expectedEdge: -0.03 }).approved).toBe(true); // gate off
+    // A strategy may switch the gate on but never off.
+    expect(mergeLimits(limits, { liveRequiresPositiveEv: false }).liveRequiresPositiveEv).toBe(true);
+    expect(mergeLimits(LOOSE_LIMITS, { liveRequiresPositiveEv: true }).liveRequiresPositiveEv).toBe(true);
+  });
+
   it.each([
     ['ROUND_VALID', { state: { secondsToLock: 3 } }],
     ['ROUND_VALID', { state: { roundOpen: false } }],
