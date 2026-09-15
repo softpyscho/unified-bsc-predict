@@ -120,6 +120,8 @@ export function registerRoutes(server: FastifyInstance, app: App, sessions: Sess
       },
       bot,
       workerLoops: app.worker.loopsRunning,
+      /** Only one server per database runs the loops; any other copy stands by. */
+      workerLease: app.worker.leaseHeld ? 'active' : 'standby',
       poolEvents: {
         enabled: config.poolEvents.enabled,
         ok:

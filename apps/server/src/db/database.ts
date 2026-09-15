@@ -129,6 +129,79 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/**
+ * At most one active worker per database. On Postgres the worker holds a session advisory lock on a connection of
+ * its own (outside the pool); a second copy (a PC and a cloud VM, say) fails to take it and stands by. If the
+ * holder's connection drops, Postgres releases the lock and the standby takes over.
+ */
+interface WorkerLease {
+  tryAcquire(): Promise<boolean>;
+  /** Still held? False once the lease connection has failed (the lock is then gone too). */
+  check(): Promise<boolean>;
+  release(): Promise<void>;
+}
+
+const WORKER_LEASE_KEY = 727275;
+const LEASE_QUERY_TIMEOUT_MS = 10_000;
+
+/** Embedded PGlite is single-process already (directory lock or in-memory), so the lease is always granted. */
+const SINGLE_PROCESS_LEASE: WorkerLease = {
+  tryAcquire: async () => true,
+  check: async () => true,
+  release: async () => undefined,
+};
+
+function postgresLease(url: string): WorkerLease {
+  let client: pg.Client | null = null;
+  let lost = false;
+  const drop = async () => {
+    const c = client;
+    client = null;
+    if (c) await c.end().catch(() => undefined);
+  };
+  return {
+    async tryAcquire() {
+      if (client && !lost) return true;
+      await drop();
+      const c = new pg.Client({ connectionString: url, query_timeout: LEASE_QUERY_TIMEOUT_MS });
+      c.on('error', () => {
+        lost = true;
+      });
+      try {
+        await c.connect();
+        const r = await c.query<{ ok: boolean }>('SELECT pg_try_advisory_lock($1) AS ok', [WORKER_LEASE_KEY]);
+        if (r.rows[0]?.ok) {
+          client = c;
+          lost = false;
+          return true;
+        }
+      } catch {
+        // unreachable database: stand by and retry later
+      }
+      await c.end().catch(() => undefined);
+      return false;
+    },
+    async check() {
+      if (!client || lost) {
+        await drop();
+        return false;
+      }
+      try {
+        await client.query('SELECT 1');
+        return true;
+      } catch {
+        await drop();
+        return false;
+      }
+    },
+    async release() {
+      if (client && !lost)
+        await client.query('SELECT pg_advisory_unlock($1)', [WORKER_LEASE_KEY]).catch(() => undefined);
+      await drop();
+    },
+  };
+}
+
 export class Db {
   private readonly current = new AsyncLocalStorage<Executor>();
   private readonly compiled = new Map<string, Compiled>();
@@ -140,7 +213,21 @@ export class Db {
     private readonly base: Executor,
     private readonly transaction: <T>(fn: (e: Executor) => Promise<T>) => Promise<T>,
     private readonly closeEngine: () => Promise<void>,
+    private readonly lease: WorkerLease,
   ) {}
+
+  /** Tries to become the database's single active worker; true when this process holds the lease. */
+  tryAcquireWorkerLease(): Promise<boolean> {
+    return this.lease.tryAcquire();
+  }
+
+  checkWorkerLease(): Promise<boolean> {
+    return this.lease.check();
+  }
+
+  releaseWorkerLease(): Promise<void> {
+    return this.lease.release();
+  }
 
   static async open(url: string): Promise<Db> {
     if (/^postgres(ql)?:\/\//.test(url)) {
@@ -163,6 +250,7 @@ export class Db {
           await q.query(sql);
         },
       });
+      const lease = postgresLease(url);
       return new Db(
         url,
         'postgres',
@@ -181,7 +269,11 @@ export class Db {
             client.release();
           }
         },
-        () => pool.end(),
+        async () => {
+          await lease.release();
+          await pool.end();
+        },
+        lease,
       );
     }
 
@@ -222,6 +314,7 @@ export class Db {
         await lite.close();
         release();
       },
+      SINGLE_PROCESS_LEASE,
     );
   }
 
