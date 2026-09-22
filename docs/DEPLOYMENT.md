@@ -74,7 +74,7 @@ It installs Node.js 24 and git, adds swap on 1 GB machines, clones the repositor
 ### E. Give it your settings
 
 In the browser SSH window, click **Upload file** (the upload button at the top right) and choose
-`C:\Users\Santo\unified-bsc-predict\.env` from your PC. It lands in your home folder; move it into place:
+`C:\Users\Santo\Projects\unified-bsc-predict\.env` from your PC. It lands in your home folder; move it into place:
 
 ```bash
 mv ~/.env ~/unified-bsc-predict/.env

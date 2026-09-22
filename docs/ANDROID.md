@@ -52,7 +52,7 @@ Tap **Allow** when Android asks.
 ## 5. Copy your settings (`.env`) to the phone
 
 1. Connect the phone to the PC with a USB cable and choose **File transfer** on the phone.
-2. On the PC, copy `C:\Users\Santo\unified-bsc-predict\.env` into the phone's **Download** folder.
+2. On the PC, copy `C:\Users\Santo\Projects\unified-bsc-predict\.env` into the phone's **Download** folder.
 3. In Termux, move it into place and delete the copy from Downloads (other apps can read that folder):
 
 ```bash
